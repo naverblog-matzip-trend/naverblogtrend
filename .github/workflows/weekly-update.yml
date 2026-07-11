@@ -1,37 +1,66 @@
+# ============================================================
+# 이 파일이 하는 일: 매일 자동으로
+#   1) 네이버 API로 맛집 언급 데이터를 수집하고
+#   2) index.html을 새로 만들고
+#   3) Netlify에 배포한다
+# 사람이 컴퓨터를 켜지 않아도, GitHub 서버에서 알아서 실행된다.
+# ============================================================
+
 name: Daily trend update
 
-# 매일 00:00 UTC(한국시간 오전 9시)에 자동 실행 + 수동 실행 버튼도 제공 실제론 8:45분 작동
-# (실행 로직은 항상 "실행 시점 기준 최근 7일 vs 그 전 7일"을 계산하는 롤링 방식이라
-#  매일 실행하면 그만큼 더 자주 트렌드가 갱신됩니다)
+# --- 언제 실행할지 ---------------------------------------------------------
+# 매일 UTC 23:45(한국시간 오전 8시 45분)에 자동 실행 + 수동 실행 버튼도 제공
+# - UTC 00:00(=한국시간 9시 정각)은 전 세계에서 예약 작업이 가장 몰리는 시간이라
+#   일부러 정각을 피해서 15분 앞당겨뒀습니다 (혼잡으로 인한 지연 가능성을 줄이기 위함)
+# - 실행 자체도 완료까지 1~2분 걸리므로, 이 여유분까지 감안한 시간입니다
+# - 다만 GitHub Actions는 예약 실행 시간을 100% 보장하지 않으므로, 아주 가끔
+#   몇 분~몇십 분 늦어질 수 있습니다 (GitHub 측 공식 안내 사항)
+# - cron 형식: '분 시 일 월 요일' (전부 UTC 기준, 요일/일/월에 * = 매번)
 on:
- schedule:
-  - cron: '45 23 * * *'
+  schedule:
+    - cron: '45 23 * * *'
   workflow_dispatch:
+    # 위 자동 스케줄 외에도, GitHub Actions 탭에서 "Run workflow" 버튼으로
+    # 언제든 수동으로도 즉시 실행할 수 있게 해주는 설정 (테스트할 때 유용)
 
 jobs:
   update-and-deploy:
     runs-on: ubuntu-latest
     steps:
+
+      # 1단계: 이 GitHub 저장소의 코드(fetch_and_build.py, config.py 등)를
+      #        실행 서버로 내려받는다
       - name: 저장소 코드 가져오기
         uses: actions/checkout@v6
 
+      # 2단계: 코드를 실행할 파이썬 프로그램을 설치한다
       - name: 파이썬 설치
         uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 
+      # 3단계: 실제 데이터 수집 스크립트를 실행한다.
+      #        NAVER_CLIENT_ID / NAVER_CLIENT_SECRET은 이 저장소의
+      #        Settings > Secrets and variables > Actions 에 등록해둔 값을
+      #        여기서 안전하게 꺼내와서 사용한다 (코드에는 절대 노출 안 됨)
       - name: 데이터 수집 및 index.html 생성
         env:
           NAVER_CLIENT_ID: ${{ secrets.NAVER_CLIENT_ID }}
           NAVER_CLIENT_SECRET: ${{ secrets.NAVER_CLIENT_SECRET }}
         run: python fetch_and_build.py
 
+      # 4단계: 방금 만들어진 index.html과 robots.txt를
+      #        배포 전용 폴더(dist)로 따로 모아둔다
       - name: 배포용 폴더 준비
         run: |
           mkdir -p dist
           cp index.html dist/
           cp robots.txt dist/
 
+      # 5단계: Netlify 배포 도구(netlify-cli)를 설치하고,
+      #        dist 폴더 내용을 실제 사이트로 올린다.
+      #        NETLIFY_AUTH_TOKEN / NETLIFY_SITE_ID도 마찬가지로
+      #        GitHub Secrets에서 안전하게 꺼내와서 사용한다
       - name: Netlify에 배포
         env:
           NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
