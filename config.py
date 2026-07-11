@@ -16,4 +16,4 @@ TOP_N_PER_REGION = 5
 OG_IMAGE_URL = "https://i.postimg.cc/gJhgW7Zz/seukeulinsyas-2026-07-11-131250.png"
 
 EXTRA_BADGES = ["서원이가 참고할", "매주 월요일 9시 업데이트"]
-GOOGLE_SITE_VERIFICATION = " google-site-verification: google63e77e3f2fbb40f1.html "
+GOOGLE_SITE_VERIFICATION = <meta name="google-site-verification" content="MOtJDf6fz2RYJmPKfziqjL9ipH0sCJ6HtVjz3ZQttP4" />
