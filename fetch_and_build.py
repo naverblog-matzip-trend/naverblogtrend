@@ -94,6 +94,20 @@ try:
         # 아예 제외된다 (배지만 숨기는 게 아니라 결과 리스트 자체에서 빠짐).
         MIN_GENUINE_RATIO_TO_SHOW = None
     try:
+        from config import TRUST_WEIGHTED_RANKING
+    except ImportError:
+        # True로 켜면, 순위를 정할 때 growth(증가폭)를 내돈내산 지수로 보정한
+        # "신뢰도 가중 점수"를 쓴다. 기본값 False = 기존처럼 growth 그대로 사용 (하위 호환)
+        TRUST_WEIGHTED_RANKING = False
+    try:
+        from config import STREAK_MIN_DAYS
+    except ImportError:
+        STREAK_MIN_DAYS = 3  # 며칠 연속 급상승이어야 "연속 상승" 배지를 보여줄지
+    try:
+        from config import STREAK_HISTORY_FILE
+    except ImportError:
+        STREAK_HISTORY_FILE = "streak_history.json"  # 연속 상승 기록을 저장할 파일명
+    try:
         from config import TOP_N_PER_REGION
     except ImportError:
         TOP_N_PER_REGION = 5  # 지역별 탭에는 기본 5개까지만 표시
@@ -167,22 +181,46 @@ def strip_tags(text: str) -> str:
     return unescape(re.sub(r"<[^>]+>", "", text)).strip()
 
 
+def simplify_category(raw_category: str) -> str:
+    """
+    네이버 지역검색 API가 주는 카테고리는 "음식점>한식>육류,고기요리"처럼
+    계층형 문자열이다. 이걸 화면에 필터 버튼으로 쓸 수 있는 단순한 이름으로 바꾼다.
+    목록에 없는 새로운 업종이 나오면 "기타"로 분류된다.
+    """
+    text = raw_category or ""
+    checks = [
+        ("카페", "카페"), ("디저트", "카페"), ("베이커리", "카페"),
+        ("술집", "술집"), ("호프", "술집"), ("포차", "술집"), ("바", "술집"),
+        ("한식", "한식"), ("일식", "일식"), ("중식", "중식"),
+        ("양식", "양식"), ("치킨", "치킨"), ("고기", "고기"),
+        ("분식", "분식"), ("패스트푸드", "패스트푸드"),
+    ]
+    for keyword, label in checks:
+        if keyword in text:
+            return label
+    return "기타"
+
+
 def get_candidate_restaurants(region: str, display: int = 20) -> list:
     """
-    지역검색 API로 "{region} 맛집"을 검색해서 후보 식당 이름 목록을 가져온다.
-    예: get_candidate_restaurants("강남") -> ["OO식당", "XX카페", ...]
+    지역검색 API로 "{region} 맛집"을 검색해서 후보 식당 목록을 가져온다.
+    이름뿐 아니라 카테고리(단순화된 업종)도 같이 담아서 반환한다.
+    예: get_candidate_restaurants("강남") -> [{"name": "OO식당", "category": "한식"}, ...]
     """
     data = _naver_get("local.json", {
         "query": f"{region} 맛집",
         "display": display,
         "sort": "random",  # 매번 똑같은 상위 업체만 나오지 않도록 무작위 정렬
     })
-    names = []
+    results = []
+    seen = set()
     for item in data.get("items", []):
         name = strip_tags(item["title"])
-        if name and name not in names:  # 같은 이름 중복 제거
-            names.append(name)
-    return names
+        if name and name not in seen:  # 같은 이름 중복 제거
+            seen.add(name)
+            category = simplify_category(item.get("category", ""))
+            results.append({"name": name, "category": category})
+    return results
 
 
 def is_sponsored_post(title: str, description: str) -> bool:
@@ -332,6 +370,49 @@ def resolve_active_regions() -> list:
     return combined
 
 
+def apply_streaks(results: list, today: datetime.date) -> None:
+    """
+    각 식당이 "며칠 연속" 급상승 목록(growth > 0)에 들었는지 계산해서
+    results의 각 항목에 "streak" 키를 채워 넣는다 (제자리에서 수정, 반환값 없음).
+
+    기록은 STREAK_HISTORY_FILE(기본 streak_history.json)에 저장해서 다음 실행 때도
+    이어서 셀 수 있게 한다. 로컬에서 매번 실행하면 파일이 계속 쌓이지만,
+    GitHub Actions에서는 이 파일을 저장소에 다시 커밋해야 실행 사이에 기록이
+    유지된다 (workflow 파일에 그 커밋 단계가 포함되어 있다).
+    """
+    history = {}
+    if os.path.exists(STREAK_HISTORY_FILE):
+        try:
+            with open(STREAK_HISTORY_FILE, "r", encoding="utf-8") as f:
+                history = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            history = {}  # 파일이 깨져 있으면 그냥 새로 시작 (에러로 죽지 않게)
+
+    yesterday_str = (today - datetime.timedelta(days=1)).isoformat()
+    today_str = today.isoformat()
+
+    for r in results:
+        name = r["name"]
+        if r["growth"] <= 0:
+            r["streak"] = 0
+            continue  # 오늘 안 올랐으면 연속 기록 대상이 아님
+
+        prev = history.get(name)
+        if prev and prev.get("last_date") == yesterday_str:
+            streak = prev.get("streak", 0) + 1  # 어제도 상승 중이었다 -> 연속 기록 이어감
+        else:
+            streak = 1  # 어제는 기록이 없거나 끊겼다 -> 오늘부터 새로 시작
+        history[name] = {"last_date": today_str, "streak": streak}
+        r["streak"] = streak
+
+    # 기록 파일이 무한정 커지지 않도록, 최근 14일 안에 갱신 안 된 식당은 정리
+    cutoff = (today - datetime.timedelta(days=14)).isoformat()
+    history = {name: v for name, v in history.items() if v.get("last_date", "") >= cutoff}
+
+    with open(STREAK_HISTORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(history, f, ensure_ascii=False, indent=2)
+
+
 def build_ranking() -> tuple:
     """전 지역을 순회하며 급상승 맛집 TOP N을 계산. (결과 리스트, 협찬/광고 추정 총 제외 건수)를 반환"""
     today = datetime.date.today()
@@ -343,7 +424,9 @@ def build_ranking() -> tuple:
         print(f"[지역검색] {region} 맛집 후보 수집 중...")
         candidates = get_candidate_restaurants(region, DISPLAY_PER_REGION)
 
-        for name in candidates:
+        for candidate in candidates:
+            name = candidate["name"]
+            category = candidate["category"]
             if name in seen_names:
                 continue  # 이미 다른 지역에서 나왔던 식당이면 중복 집계 방지
             seen_names.add(name)
@@ -371,20 +454,35 @@ def build_ranking() -> tuple:
                 print(f"    ({name}: 내돈내산 지수 {genuine_ratio}%로 낮아 순위에서 제외)")
                 continue
 
+            # 신뢰도 가중 점수: growth(증가폭)에 내돈내산 지수를 곱해서 보정한 값.
+            # 지수가 낮을수록(애매한 후기 비율이 높을수록) 실제 순위에서 페널티를 받는다.
+            # 표본 부족으로 지수가 없으면(None) 판단 근거가 없으니 그대로(가중치 1.0) 둔다.
+            score = growth * (genuine_ratio / 100 if genuine_ratio is not None else 1.0)
+
             results.append({
                 "name": name,
                 "region": region,
+                "category": category,
                 "this_week": this_week,
                 "last_week": last_week,
                 "growth": growth,
                 "filtered": filtered,
                 "genuine_ratio": genuine_ratio,  # None이면 표본 부족 -> 화면에 배지 안 뜸
+                "score": score,
             })
             ratio_note = f", 내돈내산 {genuine_ratio}%" if genuine_ratio is not None else ""
             print(f"  - {name}: 이번주 {this_week} / 지난주 {last_week} (증가 {growth}{ratio_note})")
 
-    # growth(증가폭) 큰 순서로 정렬. growth가 같으면 this_week가 큰 쪽을 우선(동점 처리)
-    results.sort(key=lambda x: (x["growth"], x["this_week"]), reverse=True)
+    # TRUST_WEIGHTED_RANKING이 켜져 있으면 score(신뢰도 보정 점수)로,
+    # 꺼져 있으면 기존처럼 growth(증가폭) 그대로 정렬 기준으로 쓴다.
+    sort_key = "score" if TRUST_WEIGHTED_RANKING else "growth"
+    results.sort(key=lambda x: (x[sort_key], x["this_week"]), reverse=True)
+
+    # 며칠 연속으로 급상승 목록에 들었는지 계산 (streak_history.json에 기록을 남겨서
+    # 다음 실행 때도 이어서 셀 수 있게 한다 - GitHub Actions에서는 이 파일을
+    # 저장소에 다시 커밋해야 실행 간에 기록이 유지된다)
+    apply_streaks(results, today)
+
     print(f"\n총 협찬/광고 추정 제외 건수: {total_filtered}건")
     return results, total_filtered  # 자르지 않고 전체 반환 - 지역별 탭 계산에 필요
 
@@ -473,13 +571,23 @@ def render_cards(items: list) -> str:
     일반 탭("전체", 지역별 탭)에서 쓰는 식당 카드 렌더러.
     각 식당을 카드 하나로 만들고, 클릭하면 네이버 지도로 연결되는 링크(<a>)로 감싼다.
     genuine_ratio(내돈내산 지수)가 있으면 이름 옆에 색깔 배지로 같이 보여준다.
+    카테고리(data-category)는 JS 필터 버튼이, 즐겨찾기 버튼은 로컬 저장(localStorage)을 쓴다.
     """
     if not items:
         return '<p style="text-align:center;color:#999;padding:20px 0;">데이터가 없습니다.</p>'
+
+    # 이 탭에 실제로 등장하는 카테고리 목록을 모아서 필터 버튼을 만든다
+    categories = sorted(set(r.get("category", "기타") for r in items))
+    category_filter_html = '<button class="cat-btn active" data-cat="전체" onclick="filterByCategory(this)">전체</button>'
+    for cat in categories:
+        category_filter_html += f'<button class="cat-btn" data-cat="{cat}" onclick="filterByCategory(this)">{cat}</button>'
+
     rows_html = ""
     for i, r in enumerate(items, start=1):
         growth_badge = f"+{r['growth']}" if r["growth"] > 0 else str(r["growth"])
         map_url = naver_map_link(r["name"], r["region"])
+        category = r.get("category", "기타")
+        fav_key = urllib.parse.quote(r["name"])  # localStorage 키에 안전하게 쓰기 위해 인코딩
 
         # 내돈내산 지수 배지: 70% 이상=초록(신뢰), 40~69%=주황(보통), 40% 미만=빨강(주의)
         # 표본이 너무 적으면(genuine_ratio가 None) 배지 자체를 안 보여준다
@@ -494,15 +602,22 @@ def render_cards(items: list) -> str:
                 tier_class = "genuine-low"
             genuine_badge_html = f'<span class="genuine-badge {tier_class}">내돈내산 {genuine_ratio}%</span>'
 
+        # 연속 상승 배지: STREAK_MIN_DAYS(기본 3일) 이상 연속으로 올랐을 때만 표시
+        streak = r.get("streak", 0)
+        streak_badge_html = f'<span class="streak-badge">🔥 {streak}일 연속</span>' if streak >= STREAK_MIN_DAYS else ""
+
         rows_html += f"""
-        <a class="card" href="{map_url}" target="_blank" rel="noopener">
+        <a class="card" data-category="{category}" href="{map_url}" target="_blank" rel="noopener">
+          <button class="fav-btn" data-key="{fav_key}"
+                  onclick="event.preventDefault(); event.stopPropagation(); toggleFavorite(this);">♡</button>
           <div class="rank">{i}</div>
           <div class="info">
             <div class="name">{r['name']} <span class="map-icon">📍</span></div>
-            <div class="region">{r['region']} {genuine_badge_html}</div>
+            <div class="region">{r['region']} · {category} {genuine_badge_html}</div>
           </div>
           <div class="stats">
             <span class="growth">{growth_badge}</span>
+            {streak_badge_html}
             <span class="count">이번 주 {r['this_week']}건 · 지난 주 {r['last_week']}건</span>
           </div>
         </a>"""
@@ -510,7 +625,8 @@ def render_cards(items: list) -> str:
     # render_region_cards에는 안 넣고 여기에만 넣는다)
     rows_html += """
         <button class="pick-btn" onclick="runRandomPick(this)">🎰 오늘 메뉴 랜덤 추천</button>"""
-    return rows_html
+    # 카테고리 필터 버튼은 카드 목록 맨 위에 와야 하므로 앞에 붙여서 반환
+    return f'<div class="cat-filter">{category_filter_html}</div>' + rows_html
 
 
 def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html"):
@@ -714,9 +830,28 @@ def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html
     text-decoration: none;
     color: inherit;
     transition: box-shadow 0.15s;
+    position: relative;
+  }}
+  .card.cat-hidden {{
+    display: none;
   }}
   .card:hover {{
     box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+  }}
+  .fav-btn {{
+    position: absolute;
+    top: 8px;
+    right: 10px;
+    background: none;
+    border: none;
+    font-size: 16px;
+    color: #ccc;
+    cursor: pointer;
+    padding: 2px;
+    line-height: 1;
+  }}
+  .fav-btn.active {{
+    color: #ff5a36;
   }}
   .map-icon {{
     font-size: 12px;
@@ -759,6 +894,37 @@ def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html
   .genuine-low {{
     background: #fdeaea;
     color: #c92a2a;
+  }}
+  .streak-badge {{
+    font-size: 10px;
+    font-weight: 700;
+    color: #d9376e;
+    background: #fdeef3;
+    padding: 2px 7px;
+    border-radius: 999px;
+    display: inline-block;
+  }}
+  .cat-filter {{
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    padding-bottom: 4px;
+    margin-bottom: 2px;
+  }}
+  .cat-btn {{
+    flex: 0 0 auto;
+    border: none;
+    background: #eee;
+    color: #666;
+    font-size: 12px;
+    font-weight: 700;
+    padding: 6px 14px;
+    border-radius: 999px;
+    cursor: pointer;
+  }}
+  .cat-btn.active {{
+    background: #333;
+    color: white;
   }}
   .stats {{
     text-align: right;
@@ -917,10 +1083,11 @@ def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html
     }});
 
     // "오늘 메뉴 랜덤 추천" 버튼 클릭 시 실행되는 슬롯머신 애니메이션.
-    // 버튼이 속한 탭(panel) 안의 식당 카드들만 대상으로 무작위 하나를 고른다.
+    // 버튼이 속한 탭(panel) 안의 식당 카드들 중, 카테고리 필터로 숨겨지지 않은
+    // (지금 화면에 실제로 보이는) 카드만 대상으로 무작위 하나를 고른다.
     function runRandomPick(btn) {{
       var panel = btn.closest('.tab-panel');
-      var cards = Array.prototype.slice.call(panel.querySelectorAll('.card'));
+      var cards = Array.prototype.slice.call(panel.querySelectorAll('.card:not(.cat-hidden)'));
       if (cards.length === 0) return;
 
       btn.disabled = true;  // 애니메이션 도는 동안 중복 클릭 방지
@@ -958,6 +1125,59 @@ def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html
       document.getElementById('pick-modal').classList.remove('active');
       document.querySelectorAll('.card.picking').forEach(function(c) {{ c.classList.remove('picking'); }});
     }}
+
+    // --- 카테고리 필터: 버튼 클릭 시 그 탭 안에서 해당 카테고리만 보이게 전환 ---
+    function filterByCategory(btn) {{
+      var filterBar = btn.closest('.cat-filter');
+      var panel = btn.closest('.tab-panel');
+      var selectedCat = btn.dataset.cat;
+
+      filterBar.querySelectorAll('.cat-btn').forEach(function(b) {{ b.classList.remove('active'); }});
+      btn.classList.add('active');
+
+      panel.querySelectorAll('.card').forEach(function(card) {{
+        if (selectedCat === '전체' || card.dataset.category === selectedCat) {{
+          card.classList.remove('cat-hidden');
+        }} else {{
+          card.classList.add('cat-hidden');
+        }}
+      }});
+    }}
+
+    // --- 즐겨찾기: 브라우저(localStorage)에 저장하므로 서버 없이도 기기별로 기억된다 ---
+    function loadFavorites() {{
+      try {{
+        return JSON.parse(localStorage.getItem('naver_trend_favorites') || '{{}}');
+      }} catch (e) {{
+        return {{}};
+      }}
+    }}
+
+    function toggleFavorite(btn) {{
+      var key = btn.dataset.key;
+      var favs = loadFavorites();
+      if (favs[key]) {{
+        delete favs[key];
+        btn.textContent = '♡';
+        btn.classList.remove('active');
+      }} else {{
+        favs[key] = true;
+        btn.textContent = '♥';
+        btn.classList.add('active');
+      }}
+      localStorage.setItem('naver_trend_favorites', JSON.stringify(favs));
+    }}
+
+    // 페이지를 열었을 때, 예전에 즐겨찾기 눌러뒀던 식당이 있으면 하트를 채워서 보여준다
+    (function restoreFavorites() {{
+      var favs = loadFavorites();
+      document.querySelectorAll('.fav-btn').forEach(function(btn) {{
+        if (favs[btn.dataset.key]) {{
+          btn.textContent = '♥';
+          btn.classList.add('active');
+        }}
+      }});
+    }})();
   </script>
 </body>
 </html>"""
