@@ -17,3 +17,4 @@ OG_IMAGE_URL = "https://i.postimg.cc/gJhgW7Zz/seukeulinsyas-2026-07-11-131250.pn
 
 EXTRA_BADGES = ["서원이가 참고할", "매주 월요일 9시 업데이트"]
 GOOGLE_SITE_VERIFICATION = "MOtJDf6fz2RYJmPKfziqjL9ipH0sCJ6HtVjz3ZQttP4"
+NAVER_SITE_VERIFICATION = "80b1fde69b4b219dc4a55603985c87d2a27dcfca" 
