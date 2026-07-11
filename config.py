@@ -47,6 +47,7 @@ OG_IMAGE_URL = "https://i.postimg.cc/gJhgW7Zz/seukeulinsyas-2026-07-11-131250.pn
 EXTRA_BADGES = ["매일 9:00 시 업데이트"]
 
 MAX_BLOG_RESULTS = 1000
+MIN_GENUINE_RATIO_TO_SHOW = 20
 
 # Google Search Console / 네이버 서치어드바이저 소유자 인증 코드
 GOOGLE_SITE_VERIFICATION = "MOtJDf6fz2RYJmPKfziqjL9ipH0sCJ6HtVjz3ZQttP4"
