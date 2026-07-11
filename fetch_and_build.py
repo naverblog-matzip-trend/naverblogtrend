@@ -304,6 +304,7 @@ def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html
 <title>이번 주 블로그 언급 급상승 맛집 TOP 8</title>
 
 <!-- 카톡/문자로 링크 공유 시 미리보기 카드에 쓰이는 정보 -->
+<meta name="description" content="네이버 블로그 언급량 기준, 이번 주 가장 뜨는 맛집 TOP 8을 확인해보세요.">
 <meta property="og:title" content="이번 주 블로그 언급 급상승 맛집 TOP 8">
 <meta property="og:description" content="네이버 블로그 언급량 기준, 이번 주 가장 뜨는 맛집 TOP 8을 확인해보세요.">
 <meta property="og:image" content="{OG_IMAGE_URL}">
@@ -539,3 +540,7 @@ if __name__ == "__main__":
     # 원본 데이터도 별도로 저장 (검증/디버깅용)
     with open("top8_raw.json", "w", encoding="utf-8") as f:
         json.dump(all_results, f, ensure_ascii=False, indent=2)
+    # 검색로봇 접근 허용 안내 파일 생성 (네이버 서치어드바이저 robots.txt 경고 해소용)
+    with open("robots.txt", "w", encoding="utf-8") as f:
+        f.write("User-agent: *\nAllow: /\n")
+    print("완료: robots.txt 생성됨")
