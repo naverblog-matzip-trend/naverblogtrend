@@ -153,6 +153,15 @@ try:
         from config import HOT_REGION_COUNT
     except ImportError:
         HOT_REGION_COUNT = 3  # 후보 지역 중 화제성 상위 몇 개를 골라 추가할지
+    try:
+        from config import REGION_QUERY_VARIANTS
+    except ImportError:
+        # 지역검색 API가 한 번에 최대 5건만 주기 때문에, 검색어를 바꿔가며 여러 번
+        # 호출해서 후보를 모은다. config.py에 없으면 기본으로 이 목록을 쓴다.
+        REGION_QUERY_VARIANTS = [
+            "맛집", "맛집 추천", "인기 맛집", "숨은 맛집", "맛집 웨이팅",
+            "한식 맛집", "카페", "고기 맛집", "일식 맛집", "술집",
+        ]
 except ImportError:
     # CLIENT_ID 등 "필수" 설정값 import 자체가 실패했다는 뜻 = config.py가 아예 없음
     raise SystemExit(
@@ -226,25 +235,37 @@ def simplify_category(raw_category: str) -> str:
     return "기타"
 
 
-def get_candidate_restaurants(region: str, display: int = 20) -> list:
+def get_candidate_restaurants(region: str, target_count: int = 20) -> list:
     """
-    지역검색 API로 "{region} 맛집"을 검색해서 후보 식당 목록을 가져온다.
-    이름뿐 아니라 카테고리(단순화된 업종)도 같이 담아서 반환한다.
+    지역검색 API로 후보 식당 목록을 가져온다.
+
+    주의: 네이버 지역검색 API는 한 번 호출에 display가 최대 5건까지만 나오고
+    (그 이상 요청해도 5건으로 잘림), start로도 다음 페이지를 못 가져온다(공식 제한).
+    그래서 "{region} 맛집" 한 번만 호출하면 지역당 후보가 5개로 묶여버려서,
+    이후 언급수/내돈내산 필터를 거치면 지역별 결과가 8개도 안 되는 경우가 생긴다.
+
+    이를 피하려고 REGION_QUERY_VARIANTS("맛집", "맛집 추천", "카페" 등)를 순서대로
+    붙여가며 여러 번 호출하고, 이름 기준으로 중복 제거해서 합친다.
+    target_count(=DISPLAY_PER_REGION)에 도달하면 그만 호출한다.
+
     예: get_candidate_restaurants("강남") -> [{"name": "OO식당", "category": "한식"}, ...]
     """
-    data = _naver_get("local.json", {
-        "query": f"{region} 맛집",
-        "display": display,
-        "sort": "random",  # 매번 똑같은 상위 업체만 나오지 않도록 무작위 정렬
-    })
     results = []
     seen = set()
-    for item in data.get("items", []):
-        name = strip_tags(item["title"])
-        if name and name not in seen:  # 같은 이름 중복 제거
-            seen.add(name)
-            category = simplify_category(item.get("category", ""))
-            results.append({"name": name, "category": category})
+    for variant in REGION_QUERY_VARIANTS:
+        if len(results) >= target_count:
+            break
+        data = _naver_get("local.json", {
+            "query": f"{region} {variant}",
+            "display": 5,  # API 최대치. 5보다 크게 요청해도 어차피 5건까지만 온다.
+            "sort": "random",  # 매번 똑같은 상위 업체만 나오지 않도록 무작위 정렬
+        })
+        for item in data.get("items", []):
+            name = strip_tags(item["title"])
+            if name and name not in seen:  # 같은 이름 중복 제거 (검색어가 겹쳐서 나오는 경우 방지)
+                seen.add(name)
+                category = simplify_category(item.get("category", ""))
+                results.append({"name": name, "category": category})
     return results
 
 
@@ -659,12 +680,23 @@ def render_cards(items: list) -> str:
     for cat in categories:
         category_filter_html += f'<button class="cat-btn" data-cat="{cat}" onclick="filterByCategory(this)">{cat}</button>'
 
+    # 정렬 미니탭: 급상승순(기본)/언급많은순/진짜후기순. 서버를 다시 호출하지 않고
+    # 지금 화면에 이미 그려진 카드들을 JS로 재배열하는 방식이라 추가 API 호출이 없다.
+    sort_bar_html = (
+        '<div class="sort-bar">'
+        '<button class="sort-btn active" data-sort="growth" onclick="sortByMetric(this)">🔥 급상승순</button>'
+        '<button class="sort-btn" data-sort="thisweek" onclick="sortByMetric(this)">💬 언급많은순</button>'
+        '<button class="sort-btn" data-sort="genuine" onclick="sortByMetric(this)">✅ 진짜후기순</button>'
+        '</div>'
+    )
+
     rows_html = ""
     for i, r in enumerate(items, start=1):
         growth_badge = f"+{r['growth']}" if r["growth"] > 0 else str(r["growth"])
         map_url = naver_map_link(r["name"], r["region"])
         category = r.get("category", "기타")
         fav_key = urllib.parse.quote(r["name"])  # localStorage 키에 안전하게 쓰기 위해 인코딩
+        share_name = urllib.parse.quote(r["name"])  # 공유 버튼에서도 같은 방식으로 이름을 안전하게 담아둔다
 
         # 내돈내산 지수 배지: 70% 이상=초록(신뢰), 40~69%=주황(보통), 40% 미만=빨강(주의)
         # 표본이 너무 적으면(genuine_ratio가 None) 배지 자체를 안 보여준다
@@ -692,8 +724,17 @@ def render_cards(items: list) -> str:
             if r.get("search_rising") is True else ""
         )
 
+        # 정렬 미니탭용 data 속성. "진짜후기순"에서 표본 부족(genuine_ratio=None)인
+        # 카드는 -1을 넣어 항상 맨 아래로 가도록 한다.
+        genuine_for_sort = genuine_ratio if genuine_ratio is not None else -1
+
         rows_html += f"""
-        <a class="card" data-category="{category}" href="{map_url}" target="_blank" rel="noopener">
+        <a class="card" data-category="{category}" data-growth="{r['growth']}"
+           data-thisweek="{r['this_week']}" data-genuine="{genuine_for_sort}"
+           href="{map_url}" target="_blank" rel="noopener">
+          <button class="share-btn" data-name="{share_name}" data-region="{r['region']}"
+                  data-category="{category}" data-rank="{i}" data-map="{map_url}"
+                  onclick="event.preventDefault(); event.stopPropagation(); shareCard(this);">🔗</button>
           <button class="fav-btn" data-key="{fav_key}"
                   onclick="event.preventDefault(); event.stopPropagation(); toggleFavorite(this);">♡</button>
           <div class="rank">{i}</div>
@@ -708,12 +749,17 @@ def render_cards(items: list) -> str:
             <span class="count">이번 주 {r['this_week']}건 · 지난 주 {r['last_week']}건</span>
           </div>
         </a>"""
-    # 카드 목록 맨 아래에 랜덤 뽑기 버튼 추가 (식당 카드가 있는 탭에서만 의미가 있어서
-    # render_region_cards에는 안 넣고 여기에만 넣는다)
-    rows_html += """
-        <button class="pick-btn" onclick="runRandomPick(this)">🎰 오늘 메뉴 랜덤 추천</button>"""
-    # 카테고리 필터 버튼은 카드 목록 맨 위에 와야 하므로 앞에 붙여서 반환
-    return f'<div class="cat-filter">{category_filter_html}</div>' + rows_html
+
+    # 랜덤 뽑기 버튼은 카드 정렬 대상(card-list) 밖에 별도로 둬서, 정렬 시 카드들이
+    # 재배치돼도 이 버튼은 항상 맨 아래 고정된다.
+    pick_btn_html = '<button class="pick-btn" onclick="runRandomPick(this)">🎰 오늘 메뉴 랜덤 추천</button>'
+
+    return (
+        f'<div class="cat-filter">{category_filter_html}</div>'
+        + sort_bar_html
+        + f'<div class="card-list">{rows_html}</div>'
+        + pick_btn_html
+    )
 
 
 def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html"):
@@ -730,6 +776,11 @@ def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html
     total_filtered: 협찬/광고 추정으로 집계에서 제외된 전체 게시물 건수.
     """
     today_str = datetime.date.today().strftime("%Y년 %m월 %d일")
+    # "N분 전 갱신" 표시용 생성 시각. GitHub Actions는 UTC로 돌아가므로 KST(UTC+9)로
+    # 변환해서 저장하고, 실제 "지금으로부터 몇 분 전"인지는 브라우저에서 JS로 계산한다
+    # (그래야 페이지를 열어둔 채로 시간이 지나도 값이 계속 갱신된다).
+    generated_at_kst = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
+    generated_at_iso = generated_at_kst.strftime("%Y-%m-%dT%H:%M:%S+09:00")
     region_tags = " ".join(f"#{r}" for r in REGIONS)  # 헤더에 보이는 "#강남 #성수..." 문구
     # EXTRA_BADGES 리스트에 있는 문구들을 헤더 배지로 하나씩 만든다 (몇 개든 가능)
     extra_badges_html = "".join(
@@ -959,10 +1010,15 @@ def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html
     flex-direction: column;
     gap: 10px;
   }}
+  .card-list {{
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }}
   .card {{
     background: white;
     border-radius: 14px;
-    padding: 16px 40px 16px 18px;
+    padding: 16px 66px 16px 18px;
     display: flex;
     align-items: center;
     gap: 14px;
@@ -997,6 +1053,26 @@ def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html
   }}
   .fav-btn.active {{
     color: #ff5a36;
+  }}
+  .share-btn {{
+    position: absolute;
+    top: 10px;
+    right: 38px;
+    width: 22px;
+    height: 22px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: none;
+    border: none;
+    font-size: 14px;
+    color: #ccc;
+    cursor: pointer;
+    padding: 0;
+    line-height: 1;
+  }}
+  .share-btn:hover {{
+    color: #666;
   }}
   .map-icon {{
     font-size: 12px;
@@ -1080,6 +1156,29 @@ def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html
   .cat-btn.active {{
     background: #333;
     color: white;
+  }}
+  .sort-bar {{
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    padding-bottom: 4px;
+    margin-bottom: 10px;
+  }}
+  .sort-btn {{
+    flex: 0 0 auto;
+    border: 1px solid #eee;
+    background: white;
+    color: #666;
+    font-size: 12px;
+    font-weight: 700;
+    padding: 6px 14px;
+    border-radius: 999px;
+    cursor: pointer;
+  }}
+  .sort-btn.active {{
+    background: #fff0eb;
+    border-color: #ff5a36;
+    color: #ff5a36;
   }}
   .stats {{
     text-align: right;
@@ -1185,7 +1284,7 @@ def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html
 </head>
 <body>
   <!-- 상단 그라데이션 헤더 영역 (제목, 배지, 지역 태그, 날짜) -->
-  <div class="hero">
+  <div class="hero" data-generated-at="{generated_at_iso}">
     <div class="hero-icon">
       <svg width="160" height="160" fill="currentColor" viewBox="0 0 24 24">
         <path d="M17.66 11.57c-.77-3.95-2.85-6.86-5.27-9.4c-.25-.26-.68-.15-.77.19-.53 2.11-.96 4.98-2.5 7-1.72 2.25-3.68 3.19-4.43 5.92C3.96 18.02 6.07 22 10 22c4.83 0 8.64-4.08 7.66-10.43z"/>
@@ -1199,7 +1298,7 @@ def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html
       <h1>이주의 급상승<br>맛집 TOP {top_n}</h1>
       <div class="hero-meta">
         <span>{region_tags}</span>
-        <span class="hero-date">{today_str}</span>
+        <span class="hero-date">{today_str} · <span id="update-relative">방금 갱신됨</span></span>
       </div>
     </div>
   </div>
@@ -1299,6 +1398,49 @@ def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html
       }});
     }}
 
+    // --- 정렬 미니탭: 급상승순/언급많은순/진짜후기순 - 서버 재호출 없이 이미 그려진
+    // 카드들을 data-growth/data-thisweek/data-genuine 값 기준으로 다시 배열한다 ---
+    function sortByMetric(btn) {{
+      var bar = btn.closest('.sort-bar');
+      var panel = btn.closest('.tab-panel');
+      var metric = btn.dataset.sort; // 'growth' | 'thisweek' | 'genuine'
+
+      bar.querySelectorAll('.sort-btn').forEach(function(b) {{ b.classList.remove('active'); }});
+      btn.classList.add('active');
+
+      var list = Array.prototype.slice.call(panel.querySelectorAll('.card-list .card'));
+      list.sort(function(a, b) {{
+        var av = parseFloat(a.dataset[metric]) || 0;
+        var bv = parseFloat(b.dataset[metric]) || 0;
+        return bv - av; // 내림차순 (큰 값이 위로)
+      }});
+      var container = panel.querySelector('.card-list');
+      if (container) {{
+        list.forEach(function(card) {{ container.appendChild(card); }});
+      }}
+    }}
+
+    // --- 공유 버튼: 카테고리/순위/이름/지도 링크를 클립보드에 복사 ---
+    function shareCard(btn) {{
+      var name = decodeURIComponent(btn.dataset.name);
+      var text = btn.dataset.region + ' · ' + btn.dataset.category + ' ' + btn.dataset.rank
+        + '위 - ' + name + '\\n' + btn.dataset.map;
+
+      function showCopied() {{
+        var original = btn.textContent;
+        btn.textContent = '✅';
+        setTimeout(function() {{ btn.textContent = original; }}, 1200);
+      }}
+
+      if (navigator.clipboard && navigator.clipboard.writeText) {{
+        navigator.clipboard.writeText(text).then(showCopied).catch(function() {{
+          window.prompt('아래 내용을 복사하세요:', text);
+        }});
+      }} else {{
+        window.prompt('아래 내용을 복사하세요:', text);
+      }}
+    }}
+
     // --- 즐겨찾기: 브라우저(localStorage)에 저장하므로 서버 없이도 기기별로 기억된다 ---
     function loadFavorites() {{
       try {{
@@ -1387,6 +1529,35 @@ def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html
         }}
       }});
       renderFavoritesTab();
+    }})();
+
+    // "N분 전 갱신" 표시: 데이터가 실제로 만들어진 시각(data-generated-at)과
+    // 지금 브라우저 시각을 비교해서 매분 갱신한다. 페이지를 열어둔 채로 시간이
+    // 지나도 "3분 전" -> "4분 전"처럼 계속 최신 상태로 바뀐다.
+    (function updateRelativeTimeLoop() {{
+      var heroEl = document.querySelector('.hero');
+      var relEl = document.getElementById('update-relative');
+      if (!heroEl || !relEl) return;
+      var generatedAt = new Date(heroEl.dataset.generatedAt);
+      if (isNaN(generatedAt.getTime())) return;
+
+      function render() {{
+        var diffMin = Math.floor((Date.now() - generatedAt.getTime()) / 60000);
+        if (diffMin < 1) {{
+          relEl.textContent = '방금 갱신됨';
+        }} else if (diffMin < 60) {{
+          relEl.textContent = diffMin + '분 전 갱신';
+        }} else {{
+          var diffHour = Math.floor(diffMin / 60);
+          if (diffHour < 24) {{
+            relEl.textContent = diffHour + '시간 전 갱신';
+          }} else {{
+            relEl.textContent = Math.floor(diffHour / 24) + '일 전 갱신';
+          }}
+        }}
+      }}
+      render();
+      setInterval(render, 60000);
     }})();
 
     // PWA: 홈 화면에 설치 가능하게 만들어주는 서비스 워커 등록.
