@@ -45,7 +45,7 @@ TOP_N_PER_REGION = 5
 
 OG_IMAGE_URL = "https://i.postimg.cc/gJhgW7Zz/seukeulinsyas-2026-07-11-131250.png"
 
-EXTRA_BADGES = ["서원이가 참고할", "매 9시 업데이트"]
+EXTRA_BADGES = ["매일 9:00 시 업데이트"]
 
 # Google Search Console / 네이버 서치어드바이저 소유자 인증 코드
 # (사이트마다 고유한 값이라, 새로 배포하는 사이트라면 본인이 새로 발급받은 값을 넣어야 합니다)
