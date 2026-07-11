@@ -6,7 +6,7 @@ CLIENT_ID = ""
 CLIENT_SECRET = ""
 
 REGIONS = [
-    "강남", "성수", "동탄", "회기"
+    "강남", "성수", "잠실" , "동탄", "회기" , "오산", "강릉", "춘천", 홍천"
 ]
 
 DISPLAY_PER_REGION = 20
@@ -15,4 +15,4 @@ TOP_N_PER_REGION = 5
 
 OG_IMAGE_URL = "https://i.postimg.cc/gJhgW7Zz/seukeulinsyas-2026-07-11-131250.png"
 
-# PERSONAL_BADGE_TEXT = "서원이가 참고할"
+EXTRA_BADGES = ["서원이가 참고할", "매주 월요일 9시 업데이트"]
