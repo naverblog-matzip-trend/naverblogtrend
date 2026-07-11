@@ -57,9 +57,14 @@ try:
     except ImportError:
         TOP_N_PER_REGION = 5  # 지역별 탭에는 기본 5개까지만 표시
     try:
-        from config import PERSONAL_BADGE_TEXT
+        from config import EXTRA_BADGES
     except ImportError:
-        PERSONAL_BADGE_TEXT = ""  # 비워두면 두 번째 배지는 표시되지 않음
+        # 기존에 PERSONAL_BADGE_TEXT를 쓰던 config.py와도 호환되도록 처리
+        try:
+            from config import PERSONAL_BADGE_TEXT
+            EXTRA_BADGES = [PERSONAL_BADGE_TEXT] if PERSONAL_BADGE_TEXT else []
+        except ImportError:
+            EXTRA_BADGES = []  # 비워두면 추가 배지가 표시되지 않음
     try:
         from config import MAX_BLOG_RESULTS
     except ImportError:
@@ -268,6 +273,9 @@ def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html
     """
     today_str = datetime.date.today().strftime("%Y년 %m월 %d일")
     region_tags = " ".join(f"#{r}" for r in REGIONS)
+    extra_badges_html = "".join(
+        f'<span class="hero-badge-secondary">{badge}</span>' for badge in EXTRA_BADGES
+    )
     overall = tabs.get("전체", [])
     top_n = len(overall) if overall else TOP_N
 
@@ -478,7 +486,7 @@ def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html
     <div class="hero-inner">
       <div class="hero-badge-row">
         <span class="hero-badge">REALTIME BLINK TREND</span>
-        {f'<span class="hero-badge-secondary">{PERSONAL_BADGE_TEXT}</span>' if PERSONAL_BADGE_TEXT else ''}
+        {extra_badges_html}
       </div>
       <h1>이주의 급상승<br>맛집 TOP {top_n}</h1>
       <div class="hero-meta">
