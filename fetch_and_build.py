@@ -487,6 +487,10 @@ def render_cards(items: list) -> str:
             <span class="count">이번 주 {r['this_week']}건 · 지난 주 {r['last_week']}건</span>
           </div>
         </a>"""
+    # 카드 목록 맨 아래에 랜덤 뽑기 버튼 추가 (식당 카드가 있는 탭에서만 의미가 있어서
+    # render_region_cards에는 안 넣고 여기에만 넣는다)
+    rows_html += """
+        <button class="pick-btn" onclick="runRandomPick(this)">🎰 오늘 메뉴 랜덤 추천</button>"""
     return rows_html
 
 
@@ -747,6 +751,90 @@ def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html
     font-size: 11px;
     color: #aaa;
   }}
+
+  /* --- 랜덤 뽑기 버튼 & 슬롯머신 애니메이션 & 결과 모달 --- */
+  .pick-btn {{
+    width: 100%;
+    max-width: 560px;
+    margin: 4px auto 0;
+    display: block;
+    border: none;
+    background: linear-gradient(to right, #f43f5e, #fb923c);
+    color: white;
+    font-size: 14px;
+    font-weight: 800;
+    padding: 14px;
+    border-radius: 14px;
+    cursor: pointer;
+  }}
+  .pick-btn:disabled {{
+    opacity: 0.6;
+    cursor: default;
+  }}
+  /* 뽑는 중 카드가 하나씩 반짝이며 지나가는 효과 */
+  .card.picking {{
+    box-shadow: 0 0 0 3px #ff5a36;
+    transform: scale(1.02);
+    transition: box-shadow 0.05s, transform 0.05s;
+  }}
+  .pick-modal-overlay {{
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.55);
+    align-items: center;
+    justify-content: center;
+    z-index: 999;
+    padding: 20px;
+  }}
+  .pick-modal-overlay.active {{
+    display: flex;
+  }}
+  .pick-modal-box {{
+    background: white;
+    border-radius: 20px;
+    padding: 32px 24px;
+    max-width: 320px;
+    width: 100%;
+    text-align: center;
+    box-shadow: 0 20px 50px rgba(0,0,0,0.3);
+  }}
+  .pick-modal-label {{
+    font-size: 13px;
+    color: #999;
+    font-weight: 700;
+  }}
+  .pick-modal-name {{
+    font-size: 24px;
+    font-weight: 800;
+    margin: 10px 0 22px;
+    word-break: keep-all;
+  }}
+  .pick-modal-buttons {{
+    display: flex;
+    gap: 8px;
+  }}
+  .pick-modal-map-btn {{
+    flex: 1;
+    background: #ff5a36;
+    color: white;
+    text-decoration: none;
+    padding: 12px;
+    border-radius: 12px;
+    font-size: 14px;
+    font-weight: 700;
+  }}
+  .pick-modal-close-btn {{
+    flex: 1;
+    background: #f1f1f1;
+    color: #666;
+    border: none;
+    padding: 12px;
+    border-radius: 12px;
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+  }}
 </style>
 </head>
 <body>
@@ -779,6 +867,18 @@ def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html
   <div class="list">
     {tab_panels_html}
   </div>
+  <!-- 랜덤 뽑기 결과를 보여주는 팝업(모달). 평소엔 숨겨져 있다가(display:none)
+       뽑기가 끝나면 JS가 display:flex로 바꿔서 화면 중앙에 띄운다 -->
+  <div id="pick-modal" class="pick-modal-overlay" onclick="if(event.target===this) closePickModal()">
+    <div class="pick-modal-box">
+      <div class="pick-modal-label">오늘 당신의 픽은</div>
+      <div class="pick-modal-name" id="pick-modal-name">-</div>
+      <div class="pick-modal-buttons">
+        <a id="pick-modal-map" href="#" target="_blank" rel="noopener" class="pick-modal-map-btn">지도에서 보기</a>
+        <button class="pick-modal-close-btn" onclick="closePickModal()">닫기</button>
+      </div>
+    </div>
+  </div>
   <!-- 탭 전환 기능: 버튼 클릭 시 모든 탭/버튼의 active를 지우고,
        클릭된 것에만 다시 active를 붙여서 그 내용만 보이게 만든다 -->
   <script>
@@ -790,6 +890,49 @@ def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html
         document.getElementById(btn.dataset.tab).classList.add('active');
       }});
     }});
+
+    // "오늘 메뉴 랜덤 추천" 버튼 클릭 시 실행되는 슬롯머신 애니메이션.
+    // 버튼이 속한 탭(panel) 안의 식당 카드들만 대상으로 무작위 하나를 고른다.
+    function runRandomPick(btn) {{
+      var panel = btn.closest('.tab-panel');
+      var cards = Array.prototype.slice.call(panel.querySelectorAll('.card'));
+      if (cards.length === 0) return;
+
+      btn.disabled = true;  // 애니메이션 도는 동안 중복 클릭 방지
+
+      var finalIndex = Math.floor(Math.random() * cards.length);
+      var loops = 3;  // 최종 결과가 나오기 전에 카드 목록을 몇 바퀴 훑을지
+      var totalSteps = loops * cards.length + finalIndex;
+      var counter = 0;
+
+      var interval = setInterval(function() {{
+        cards.forEach(function(c) {{ c.classList.remove('picking'); }});
+        var idx = counter % cards.length;
+        cards[idx].classList.add('picking');
+        counter++;
+
+        if (counter > totalSteps) {{
+          clearInterval(interval);
+          btn.disabled = false;
+          showPickModal(cards[finalIndex]);
+        }}
+      }}, 80);
+    }}
+
+    function showPickModal(card) {{
+      var nameEl = card.querySelector('.name');
+      // .name 안에는 이름 텍스트 + 지도 아이콘(span)이 같이 있어서,
+      // 첫 번째 텍스트 노드(이름 부분)만 뽑아서 보여준다
+      var name = nameEl.childNodes[0].textContent.trim();
+      document.getElementById('pick-modal-name').textContent = name;
+      document.getElementById('pick-modal-map').href = card.href;
+      document.getElementById('pick-modal').classList.add('active');
+    }}
+
+    function closePickModal() {{
+      document.getElementById('pick-modal').classList.remove('active');
+      document.querySelectorAll('.card.picking').forEach(function(c) {{ c.classList.remove('picking'); }});
+    }}
   </script>
 </body>
 </html>"""
