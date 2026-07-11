@@ -87,6 +87,13 @@ try:
     except ImportError:
         MIN_SAMPLE_FOR_GENUINE_RATIO = 5  # 이 값 미만이면 지수를 표시하지 않음 (표본 너무 적음)
     try:
+        from config import MIN_GENUINE_RATIO_TO_SHOW
+    except ImportError:
+        # 기본값 None = 필터링 기능 꺼짐 (기존 동작 그대로 유지, 하위 호환).
+        # 숫자(예: 20)를 넣으면, 내돈내산 지수가 그 값 미만인 식당은 순위 후보에서
+        # 아예 제외된다 (배지만 숨기는 게 아니라 결과 리스트 자체에서 빠짐).
+        MIN_GENUINE_RATIO_TO_SHOW = None
+    try:
         from config import TOP_N_PER_REGION
     except ImportError:
         TOP_N_PER_REGION = 5  # 지역별 탭에는 기본 5개까지만 표시
@@ -350,6 +357,18 @@ def build_ranking() -> tuple:
 
             # 최소 언급량 필터: 우연히 1~2건 튄 걸 급상승으로 착시하지 않도록
             if this_week < 2:
+                continue
+
+            # 내돈내산 지수 필터: 표본이 충분한데(genuine_ratio가 None이 아님)
+            # 그 값이 기준(MIN_GENUINE_RATIO_TO_SHOW)보다 낮으면, 배지만 숨기는 게
+            # 아니라 순위 후보 자체에서 뺀다. 표본이 부족해서 지수를 못 낸 경우는
+            # (genuine_ratio가 None) 판단 근거가 없으므로 그냥 통과시킨다.
+            if (
+                MIN_GENUINE_RATIO_TO_SHOW is not None
+                and genuine_ratio is not None
+                and genuine_ratio < MIN_GENUINE_RATIO_TO_SHOW
+            ):
+                print(f"    ({name}: 내돈내산 지수 {genuine_ratio}%로 낮아 순위에서 제외)")
                 continue
 
             results.append({
