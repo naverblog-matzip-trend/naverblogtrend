@@ -7,14 +7,13 @@ CLIENT_SECRET = ""
 
 # 주의: 지역 이름은 반드시 양쪽에 큰따옴표(")가 다 있어야 합니다.
 # 예: "강남", "성수" (O)   "강남", 성수" (X - SyntaxError 발생)
-
 # 아래 REGIONS는 CANDIDATE_REGIONS를 안 쓸 경우의 기본값 (하위 호환용, 지금은 안 쓰임)
 REGIONS = [
     "강남", "성수", "동탄", "회기"
 ]
 
 # 고정으로 항상 포함할 지역 (블로그 포스팅 밀도가 검증된 동네 위주로 구성)
-CORE_REGIONS = [ "강남", "성수", "잠실", "동탄", "회기"]
+CORE_REGIONS = ["강남", "성수", "잠실", "동탄", "회기"]
 
 # 화제성 검사 대상 후보 풀 - 전국 주요 동네/도시를 폭넓게 넣어두면, 매 실행마다
 # 이 중 화제성 상위 HOT_REGION_COUNT개가 자동으로 CORE_REGIONS에 추가됩니다.
@@ -46,9 +45,9 @@ TOP_N_PER_REGION = 5
 OG_IMAGE_URL = "https://i.postimg.cc/gJhgW7Zz/seukeulinsyas-2026-07-11-131250.png"
 
 EXTRA_BADGES = ["매일 9:00 시 업데이트"]
+
 MAX_BLOG_RESULTS = 1000
 
 # Google Search Console / 네이버 서치어드바이저 소유자 인증 코드
-# (사이트마다 고유한 값이라, 새로 배포하는 사이트라면 본인이 새로 발급받은 값을 넣어야 합니다)
-# GOOGLE_SITE_VERIFICATION = "본인이_발급받은_값"
-# NAVER_SITE_VERIFICATION = "본인이_발급받은_값"
+GOOGLE_SITE_VERIFICATION = "MOtJDf6fz2RYJmPKfziqjL9ipH0sCJ6HtVjz3ZQttP4"
+NAVER_SITE_VERIFICATION = "80b1fde69b4b219dc4a55603985c87d2a27dcfca" 
