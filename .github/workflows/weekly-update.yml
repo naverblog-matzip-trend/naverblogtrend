@@ -56,10 +56,22 @@ jobs:
       # 기록 파일들(streak/지역캐시/후보캐시/트렌드)은 main이 아니라 별도의
       # "data" 브랜치에 보관한다. 여기서 그 브랜치의 파일들을 작업 폴더로 가져온다.
       # (data 브랜치가 아직 없으면 - 첫 실행 - 그냥 건너뛰고 새로 시작한다)
-      - name: 기록 파일 불러오기 (data 브랜치)
+      #
+      # 주의: 예전에는 `git checkout FETCH_HEAD -- .`(와일드카드)로 전체를 가져왔는데,
+      # 만약 data 브랜치에 JSON 외의 파일(예: 낡은 소스 코드)이 실수로 섞여 들어가면
+      # main의 최신 코드를 조용히 덮어써버리는 사고(Silent Regression)가 가능했다.
+      # 그래서 관리 대상 JSON 4개만 파일 단위로 콕 집어 가져오도록 범위를 제한한다.
+      # (파일별 개별 checkout이라, 일부 파일이 아직 없어도 나머지는 정상 복원된다)
+      - name: 기록 파일 불러오기 (data 브랜치, JSON 4개만 엄격 제한)
         run: |
-          git fetch origin data 2>/dev/null && git checkout FETCH_HEAD -- . \
-            || echo "data 브랜치가 아직 없음 - 이번 실행에서 새로 생성됩니다"
+          if git fetch origin data 2>/dev/null; then
+            for f in streak_history.json region_volume_cache.json candidate_cache.json trend_history.json; do
+              git checkout FETCH_HEAD -- "$f" 2>/dev/null \
+                || echo "  ($f 없음 - 이번 실행에서 새로 생성됩니다)"
+            done
+          else
+            echo "data 브랜치가 아직 없음 - 이번 실행에서 새로 생성됩니다"
+          fi
 
       - name: 파이썬 설치
         uses: actions/setup-python@v6
@@ -93,14 +105,16 @@ jobs:
           git commit -q -m "chore: 기록 파일 갱신 (매 실행마다 이 커밋 하나를 덮어씀)"
           git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" data
 
-      # index.html/robots.txt 외에, PWA(홈 화면 설치) 관련 정적 파일들도
-      # 같이 배포 폴더에 담는다
+      # index.html/robots.txt/sitemap.xml은 필수 산출물이라 없으면 실패하는 게 맞고,
+      # PWA/아이콘 등 부가 정적 파일은 "있는 것만" 복사한다
+      # -> 나중에 이 파일들을 저장소에서 지워도 배포 파이프라인이 죽지 않는다
       - name: 배포용 폴더 준비
         run: |
           mkdir -p dist
-          cp index.html dist/
-          cp robots.txt sitemap.xml dist/
-          cp icon.svg icon-192.png icon-512.png apple-touch-icon.png manifest.json sw.js dist/
+          cp index.html robots.txt sitemap.xml dist/
+          for f in icon.svg icon-192.png icon-512.png apple-touch-icon.png manifest.json sw.js; do
+            if [ -f "$f" ]; then cp "$f" dist/; else echo "  ($f 없음 - 건너뜀)"; fi
+          done
 
       # 아래 두 단계는 GitHub Pages 배포를 위한 공식 준비 작업
       - name: GitHub Pages 설정
