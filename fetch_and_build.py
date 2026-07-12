@@ -2298,7 +2298,7 @@ def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html
       <div id="pay-setup" style="margin-top:6px;">
         <div class="pay-field">
           <span>모임 총 인원</span>
-          <input type="number" id="pay-count" min="2" max="12" value="4" inputmode="numeric" oninput="renderPayInputs()">
+          <input type="number" id="pay-count" min="2" max="12" value="4" inputmode="numeric" oninput="renderPayInputs()" onblur="this.value = Math.max(2, Math.min(12, parseInt(this.value, 10) || 4)); renderPayInputs();">
         </div>
         <div id="pay-names"></div>
         <div class="pay-field">
@@ -2890,9 +2890,15 @@ def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html
       }});
       var n = names.length;
       if (n < 2) return;
-      var m = parseInt(document.getElementById('pay-winners').value, 10);
+      var winnersInput = document.getElementById('pay-winners');
+      var m = parseInt(winnersInput.value, 10);
       if (isNaN(m) || m < 1) m = 1;
       if (m > n) m = n;  // M <= N 강제
+      // 보정이 일어났으면(총원 초과 입력, 빈 값, 0 등) 화면의 입력창 숫자도 실제
+      // 추첨에 쓰인 값으로 함께 동기화한다 - "인원 초과라 총원 기준으로 뽑혔구나"를
+      // 유저가 눈으로 바로 인지할 수 있게. (m > n 분기만 고치면 빈 값/0 입력 케이스가
+      // 여전히 어긋나므로, 클램핑 완료 후 무조건 한 번 반영하는 게 모든 분기를 커버)
+      winnersInput.value = m;
 
       // Fisher-Yates 셔플 후 앞에서 M명 -> 중복 없는 공정한 추첨
       var pool = names.slice();
