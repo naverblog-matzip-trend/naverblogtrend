@@ -1027,6 +1027,9 @@ def render_cards(items: list) -> str:
         '<button class="sort-btn active" data-sort="rankmetric" onclick="sortByMetric(this)">🔥 급상승순</button>'
         '<button class="sort-btn" data-sort="thisweek" onclick="sortByMetric(this)">💬 언급많은순</button>'
         '<button class="sort-btn" data-sort="genuine" onclick="sortByMetric(this)">✅ 진짜후기순</button>'
+        # 카톡 투표 항목 복사: 지금 화면(필터/정렬 상태 그대로)의 상위 5개 이름만
+        # 줄바꿈으로 복사. margin-left:auto로 정렬 바 우측 끝에 붙는다.
+        '<button class="vote-btn" onclick="copyVoteList(this)">📊 카톡투표 항목 복사</button>'
         '</div>'
     )
 
@@ -1132,9 +1135,15 @@ def render_cards(items: list) -> str:
           </div>
         </a>"""
 
-    # 랜덤 뽑기 버튼은 카드 정렬 대상(card-list) 밖에 별도로 둬서, 정렬 시 카드들이
-    # 재배치돼도 이 버튼은 항상 맨 아래 고정된다.
-    pick_btn_html = '<button class="pick-btn" onclick="runRandomPick(this)">🎰 오늘 메뉴 랜덤 추천</button>'
+    # 랜덤 뽑기/월드컵 버튼은 카드 정렬 대상(card-list) 밖에 별도로 둬서, 정렬 시
+    # 카드들이 재배치돼도 항상 맨 아래 고정된다. 월드컵 버튼은 화면에 보이는 카드가
+    # 4개 미만이면 JS(updateWorldcupButton)가 숨기고, 그때 랜덤 버튼이 100%를 차지한다.
+    pick_btn_html = (
+        '<div class="action-row">'
+        '<button class="pick-btn" onclick="runRandomPick(this)">🎰 오늘 메뉴 랜덤 추천</button>'
+        '<button class="wc-btn" onclick="startWorldcup(this)">🏆 이주의 핫플 월드컵</button>'
+        '</div>'
+    )
 
     return (
         f'<div class="cat-filter">{category_filter_html}</div>'
@@ -1142,6 +1151,55 @@ def render_cards(items: list) -> str:
         + f'<div class="card-list">{rows_html}</div>'
         + pick_btn_html
     )
+
+
+def build_ticker_slides(tabs: dict) -> list:
+    """
+    롤링 전광판(티커)에 순환 표시할 슬라이드 문구들을 만든다.
+    모든 연산과 문구 조립을 백엔드(여기)에서 끝내고, 브라우저 JS는 7초마다
+    슬라이드를 전환만 한다 (100% 정적 SSR 원칙 유지, 인터랙션 없음).
+
+    Slide 1 - 상권 대첩 헤드라인 (지역랭킹 기반, 계층형 분기):
+      1순위: 1위 지역 증가폭이 0 이하 -> 전체 침체 문구
+      2순위: 1위는 양수인데 2위 지역이 없음 -> 단독 독점 문구
+      3순위: 2위/1위 비율이 0.90 이상 -> 초박빙 문구
+      4순위: 그 외 -> 일반 격차 문구
+    Slide 2 - 급상승 1위 식당 (전체 탭 1위)
+    Slide 3 - 내돈내산 지수 최고 식당 (유효 지수 보유 식당이 1곳도 없으면 슬라이드 제외)
+    Slide 4 - 연속 상승(스테디) 식당 (streak >= STREAK_MIN_DAYS 매장 있을 때만 포함)
+    """
+    slides = []
+    region_ranking = tabs.get("지역랭킹") or []
+    overall = tabs.get("전체") or []
+
+    if region_ranking:
+        top = region_ranking[0]
+        second = region_ranking[1] if len(region_ranking) > 1 else None
+        if top["total_growth"] <= 0:
+            slides.append("📍 이번 주 전국 주요 상권의 언급 트렌드가 전반적으로 차분한 흐름을 보이고 있습니다.")
+        elif second is None:
+            slides.append(f"📍 현재 {escape(top['region'])} 상권이 상위 트렌드를 압도적 독식 중!")
+        else:
+            diff = top["total_growth"] - second["total_growth"]
+            if second["total_growth"] / top["total_growth"] >= 0.90:
+                slides.append(f"⚡ {escape(top['region'])} vs {escape(second['region'])} 단 {diff}건 차이 초박빙!")
+            else:
+                slides.append(f"🔥 이번 주 {escape(top['region'])}, {escape(second['region'])}을 {diff}건 차로 화제성 1위!")
+
+    if overall:
+        slides.append(f"🚀 이번 주 언급 급상승 1위 : {escape(overall[0]['name'])}")
+
+        genuines = [r for r in overall if r.get("genuine_ratio") is not None]
+        if genuines:  # 유효 지수 보유 식당이 없으면 이 슬라이드는 통째로 제외
+            g = max(genuines, key=lambda r: r["genuine_ratio"])
+            slides.append(f"💝 내돈내산 1위 : {escape(g['name'])} ({g['genuine_ratio']}%)")
+
+        steadies = [r for r in overall if r.get("streak", 0) >= STREAK_MIN_DAYS]
+        if steadies:  # 조건 매장이 없으면 이 슬라이드는 롤링에서 제외
+            s = max(steadies, key=lambda r: r["streak"])
+            slides.append(f"💎 {escape(s['region'])} 블로그스테디 매장 : {escape(s['name'])} ({s['streak']}일 연속)")
+
+    return slides
 
 
 def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html"):
@@ -1172,6 +1230,14 @@ def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html
     overall = tabs.get("전체", [])
     top_n = len(overall) if overall else TOP_N  # 헤더의 "TOP N" 숫자
 
+    # --- 롤링 전광판(티커): 문구는 백엔드에서 완성, JS는 7초 순환만 담당 ---
+    ticker_slides = build_ticker_slides(tabs)
+    ticker_items_html = "".join(
+        f'<div class="ticker-slide{" active" if i == 0 else ""}">{s}</div>'
+        for i, s in enumerate(ticker_slides)
+    )
+    ticker_html = f'<div class="ticker">{ticker_items_html}</div>' if ticker_slides else ""
+
     # --- SEO 개선 ② 구조화 데이터(JSON-LD) -------------------------------------
     # 검색엔진(특히 Google)이 페이지 내용을 명확히 이해하도록 도와주는 공식 규격.
     # "이 페이지는 식당 목록이고, 각 항목은 이런 이름/지역이다"를 기계가 읽을 수 있는
@@ -1199,7 +1265,7 @@ def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html
 
     # 하단 안내 문구: 협찬 제외 건수는 항상 표시하고, 내돈내산 지수 기준으로
     # 필터링하는 기능(MIN_GENUINE_RATIO_TO_SHOW)이 켜져 있으면 그 기준도 같이 안내한다
-    filter_note = f"협찬·광고·체험단 추정 게시물 {total_filtered}건 제외"
+    filter_note = f"지역별 집계 합산 기준 협찬·광고·체험단 추정 게시물 {total_filtered}건 제외"
     if MIN_GENUINE_RATIO_TO_SHOW is not None:
         filter_note += f" · 내돈내산 지수 {MIN_GENUINE_RATIO_TO_SHOW}% 이상 게시글로만 집계"
 
@@ -1725,6 +1791,123 @@ def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html
     color: #9aa0ab;
   }}
 
+  /* --- 롤링 전광판: 클릭/호버 무반응(pointer-events:none) 순수 자동 롤링.
+       이름이 아무리 길어도 한 줄로 말려 들어가 레이아웃이 안 깨진다 --- */
+  .ticker {{
+    max-width: 560px;
+    margin: 0 auto 12px;
+    background: white;
+    border-radius: 12px;
+    padding: 10px 14px;
+    font-size: 12px;
+    font-weight: 700;
+    color: #555;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    pointer-events: none;
+    box-sizing: border-box;
+  }}
+  .ticker-slide {{
+    display: none;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }}
+  .ticker-slide.active {{
+    display: block;
+  }}
+  body.dark .ticker {{
+    background: #1e2129;
+    color: #9aa0ab;
+  }}
+
+  /* --- 하단 액션 버튼 줄 (랜덤 추천 + 월드컵) --- */
+  .action-row {{
+    display: flex;
+    gap: 8px;
+    margin-top: 4px;
+  }}
+  .action-row .pick-btn {{
+    flex: 1;
+    margin: 0;
+    max-width: none;
+  }}
+  .wc-btn {{
+    flex: 1;
+    border: none;
+    background: linear-gradient(to right, #6d28d9, #4c6ef5);
+    color: white;
+    font-size: 14px;
+    font-weight: 800;
+    padding: 14px;
+    border-radius: 14px;
+    cursor: pointer;
+  }}
+  .wc-btn.hidden {{
+    display: none;
+  }}
+  .wc-choice {{
+    width: 100%;
+    border: 2px solid #eee;
+    background: white;
+    color: inherit;
+    font-size: 16px;
+    font-weight: 800;
+    padding: 16px 10px;
+    border-radius: 14px;
+    cursor: pointer;
+    word-break: keep-all;
+  }}
+  .wc-choice:hover {{
+    border-color: #ff5a36;
+    color: #ff5a36;
+  }}
+  .wc-vs {{
+    font-size: 12px;
+    font-weight: 800;
+    color: #999;
+    margin: 8px 0;
+  }}
+  body.dark .wc-choice {{
+    background: #2a2e38;
+    border-color: #3a3f4a;
+  }}
+
+  /* --- 카톡투표 항목 복사 버튼 (정렬 바 우측 끝) --- */
+  .vote-btn {{
+    flex: 0 0 auto;
+    margin-left: auto;
+    border: 1px solid #eee;
+    background: white;
+    color: #666;
+    font-size: 12px;
+    font-weight: 700;
+    padding: 6px 14px;
+    border-radius: 999px;
+    cursor: pointer;
+  }}
+  body.dark .vote-btn {{
+    background: #1e2129;
+    border-color: #2a2e38;
+    color: #9aa0ab;
+  }}
+
+  /* --- 즐겨찾기 목록 통째로 공유 버튼 --- */
+  .fav-share-btn {{
+    width: 100%;
+    margin-top: 10px;
+    border: none;
+    background: linear-gradient(to right, #ec4899, #f43f5e);
+    color: white;
+    font-size: 14px;
+    font-weight: 800;
+    padding: 14px;
+    border-radius: 14px;
+    cursor: pointer;
+  }}
+
   /* --- 랜덤 뽑기 버튼 & 슬롯머신 애니메이션 & 결과 모달 --- */
   .pick-btn {{
     width: 100%;
@@ -1832,6 +2015,9 @@ def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html
       </div>
     </div>
   </div>
+  <!-- 롤링 전광판: 백엔드가 구운 슬라이드를 JS가 7초마다 순환.
+       클릭/호버 어떤 인터랙션도 받지 않는 순수 자동 롤링 (pointer-events:none) -->
+  {ticker_html}
   <!-- 탭 버튼들 (전체/지역랭킹/지역별) - 위에서 만들어둔 tab_buttons_html이 여기 들어감 -->
   <div class="tabs">
     {tab_buttons_html}
@@ -1850,7 +2036,28 @@ def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html
       <div class="pick-modal-name" id="pick-modal-name">-</div>
       <div class="pick-modal-buttons">
         <a id="pick-modal-map" href="#" target="_blank" rel="noopener" class="pick-modal-map-btn">지도에서 보기</a>
+        <button class="pick-modal-close-btn" onclick="sharePick(this)">🎰 공유</button>
         <button class="pick-modal-close-btn" onclick="closePickModal()">닫기</button>
+      </div>
+    </div>
+  </div>
+  <!-- 맛집 월드컵 모달: 화면에 보이는 카드들로 8강/4강 토너먼트를 진행하고,
+       결승이 끝나면 같은 상자 안에서 우승 결과 화면으로 전환된다 -->
+  <div id="wc-modal" class="pick-modal-overlay" onclick="if(event.target===this) closeWorldcup()">
+    <div class="pick-modal-box">
+      <div class="pick-modal-label" id="wc-round-label">-</div>
+      <div id="wc-match" style="margin-top:14px;">
+        <button class="wc-choice" id="wc-choice-a" onclick="wcPick(0)">-</button>
+        <div class="wc-vs">VS</div>
+        <button class="wc-choice" id="wc-choice-b" onclick="wcPick(1)">-</button>
+      </div>
+      <div id="wc-winner" style="display:none;">
+        <div class="pick-modal-name" id="wc-winner-name">-</div>
+        <div class="pick-modal-buttons">
+          <a id="wc-winner-map" href="#" target="_blank" rel="noopener" class="pick-modal-map-btn">지도에서 보기</a>
+          <button class="pick-modal-close-btn" onclick="shareWcWinner(this)">🏆 공유</button>
+          <button class="pick-modal-close-btn" onclick="closeWorldcup()">닫기</button>
+        </div>
       </div>
     </div>
   </div>
@@ -1900,9 +2107,15 @@ def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html
       // .name 안에는 이름 텍스트 + 지도 아이콘(span)이 같이 있어서,
       // 첫 번째 텍스트 노드(이름 부분)만 뽑아서 보여준다
       var name = nameEl.childNodes[0].textContent.trim();
+      var modal = document.getElementById('pick-modal');
+      var panel = card.closest('.tab-panel');
+      // 공유 버튼(sharePick)이 쓸 정보를 모달에 저장해둔다
+      modal.dataset.name = name;
+      modal.dataset.map = card.href;
+      modal.dataset.tab = (panel && panel.dataset.tabname) || '';
       document.getElementById('pick-modal-name').textContent = name;
       document.getElementById('pick-modal-map').href = card.href;
-      document.getElementById('pick-modal').classList.add('active');
+      modal.classList.add('active');
     }}
 
     function closePickModal() {{
@@ -1942,6 +2155,7 @@ def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html
       }});
 
       renumberVisibleRanks(panel);
+      updateWorldcupButton(panel);  // 보이는 카드 수가 바뀌면 월드컵 버튼 노출 조건도 갱신
     }}
 
     // --- 정렬 미니탭: 급상승순/언급많은순/진짜후기순 - 서버 재호출 없이 이미 그려진
@@ -2086,6 +2300,10 @@ def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html
         }}
       }});
 
+      if (cardsHtml) {{
+        // 찜한 카드가 1개 이상일 때만 리스트 하단에 "통째로 공유" 버튼을 결합
+        cardsHtml += '<button class="fav-share-btn" onclick="shareFavorites(this)">💝 즐겨찾기 목록 통째로 공유</button>';
+      }}
       panel.innerHTML = cardsHtml || '<p style="text-align:center;color:#999;padding:20px 0;">'
         + '아직 즐겨찾기한 맛집이 없어요. 카드의 ♡를 눌러보세요.</p>';
     }}
@@ -2124,18 +2342,27 @@ def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html
       var scheme = 'nmap://search?query=' + query
         + '&appname=' + encodeURIComponent('{SITE_URL}');
 
-      // 1.5초 안에 앱이 열려서 화면이 백그라운드로 전환되면 폴백을 취소하고,
-      // 아무 일도 안 일어나면(앱 없음/스키마 차단) 웹 지도로 이동한다
+      // 2.5초 안에 앱이 열리면 폴백을 취소하고, 아무 일도 안 일어나면
+      // (앱 없음/스키마 차단) 웹 지도로 이동한다.
+      // 주의: iOS 등에서 "지도에서 여시겠습니까?" 시스템 팝업이 뜬 동안에도
+      // 타이머는 계속 흐르는데, 이 팝업은 페이지를 hidden으로 만들지 않는 경우가
+      // 있어 visibilitychange만으로는 놓친다. 그래서 팝업/앱 전환 시 발생하는
+      // blur(포커스 이탈)와 pagehide(페이지 이탈)까지 3중으로 감지해 취소하고,
+      // 유저가 팝업을 보며 고민할 여유(2.5초)도 확보한다.
       var fallbackTimer = setTimeout(function() {{
         window.location.href = webUrl;
-      }}, 1500);
-      var cancelFallback = function() {{
-        if (document.hidden) {{
-          clearTimeout(fallbackTimer);
-          document.removeEventListener('visibilitychange', cancelFallback);
-        }}
+      }}, 2500);
+      var cancelFallback = function(e) {{
+        // visibilitychange는 실제로 화면이 숨겨졌을 때만 취소 (복귀 이벤트는 무시)
+        if (e && e.type === 'visibilitychange' && !document.hidden) return;
+        clearTimeout(fallbackTimer);
+        document.removeEventListener('visibilitychange', cancelFallback);
+        window.removeEventListener('blur', cancelFallback);
+        window.removeEventListener('pagehide', cancelFallback);
       }};
       document.addEventListener('visibilitychange', cancelFallback);
+      window.addEventListener('blur', cancelFallback);
+      window.addEventListener('pagehide', cancelFallback);
       window.location.href = scheme;
     }}
 
@@ -2148,6 +2375,187 @@ def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html
       e.preventDefault();
       openInNaverMapApp(card);
     }});
+
+    // ==================== 공유/복사 공통 유틸 ====================
+    var SITE_URL = '{SITE_URL}';
+
+    function copyTextWithFeedback(text, btn) {{
+      function done() {{
+        if (!btn) return;
+        var original = btn.textContent;
+        btn.textContent = '✅ 복사됨';
+        setTimeout(function() {{ btn.textContent = original; }}, 1200);
+      }}
+      if (navigator.clipboard && navigator.clipboard.writeText) {{
+        navigator.clipboard.writeText(text).then(done).catch(function() {{
+          window.prompt('아래 내용을 복사하세요:', text);
+        }});
+      }} else {{
+        window.prompt('아래 내용을 복사하세요:', text);
+      }}
+    }}
+
+    // 모바일이면 네이티브 공유 시트(카톡 등 바로 선택), 아니면 클립보드 복사
+    function shareOrCopy(text, btn) {{
+      if (navigator.share) {{
+        navigator.share({{ text: text }}).catch(function() {{ copyTextWithFeedback(text, btn); }});
+      }} else {{
+        copyTextWithFeedback(text, btn);
+      }}
+    }}
+
+    function nowLabel() {{
+      return new Date().toLocaleString('ko-KR', {{ month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }});
+    }}
+
+    // '전체'/'즐겨찾기'/'지역랭킹' 탭이면 지역명을 자연스럽게 생략하고,
+    // 특정 지역 탭일 때만 "지역명 " 접두어를 붙인다 (공유 문구 분기 규칙)
+    function tabRegionPrefix(tab) {{
+      return (tab && tab !== '전체' && tab !== '즐겨찾기' && tab !== '지역랭킹') ? tab + ' ' : '';
+    }}
+
+    // ==================== 랜덤 픽 결과 공유 ====================
+    function sharePick(btn) {{
+      var m = document.getElementById('pick-modal');
+      if (!m.dataset.name) return;
+      var text = '🎰 오늘의 랜덤 픽!\\n'
+        + '결정이 어렵다면 ' + nowLabel() + ' ' + tabRegionPrefix(m.dataset.tab)
+        + '급상승 맛집으로 뽑은 곳은 바로 **[ ' + m.dataset.name + ' ]** 입니다.\\n\\n'
+        + '📍 지도 보기: ' + m.dataset.map + '\\n'
+        + '⚡ 다른 동네 굴려보기: ' + SITE_URL;
+      shareOrCopy(text, btn);
+    }}
+
+    // ==================== 즐겨찾기 목록 통째로 공유 ====================
+    function shareFavorites(btn) {{
+      var panel = document.getElementById('tab-favorites');
+      var cards = panel.querySelectorAll('.card');
+      if (cards.length === 0) return;
+      var lines = ['💝 내 즐겨찾기 맛집 ' + cards.length + '곳'];
+      cards.forEach(function(card, i) {{
+        var name = card.querySelector('.name').childNodes[0].textContent.trim();
+        lines.push((i + 1) + '위 ' + name + ' - ' + card.href);
+      }});
+      lines.push('');
+      lines.push('⚡ 전체 랭킹 보기: ' + SITE_URL);
+      shareOrCopy(lines.join('\\n'), btn);
+    }}
+
+    // ==================== 카톡투표 항목 복사 ====================
+    // 지금 화면 상태(카테고리 필터 + 정렬) 그대로, 보이는 상위 최대 5개의
+    // "순수 이름"만 줄바꿈으로 이어 클립보드에 복사한다
+    function copyVoteList(btn) {{
+      var panel = btn.closest('.tab-panel');
+      var visible = Array.prototype.slice.call(panel.querySelectorAll('.card-list .card:not(.cat-hidden)'));
+      var names = visible.slice(0, 5).map(function(card) {{
+        return card.querySelector('.name').childNodes[0].textContent.trim();
+      }});
+      if (names.length === 0) return;
+      copyTextWithFeedback(names.join('\\n'), btn);
+    }}
+
+    // ==================== 롤링 전광판 (순수 자동 순환) ====================
+    // 슬라이드 문구는 백엔드가 미리 구워뒀고, 여기서는 7초마다 전환만 한다.
+    // 전광판 영역은 pointer-events:none이라 어떤 클릭/호버에도 반응하지 않는다.
+    (function initTicker() {{
+      var slides = document.querySelectorAll('.ticker-slide');
+      if (slides.length < 2) return;  // 슬라이드가 1개뿐이면 순환 불필요
+      var current = 0;
+      window.advanceTicker = function() {{
+        slides[current].classList.remove('active');
+        current = (current + 1) % slides.length;
+        slides[current].classList.add('active');
+      }};
+      setInterval(window.advanceTicker, 7000);
+    }})();
+
+    // ==================== 맛집 월드컵 토너먼트 ====================
+    var wcState = null;
+
+    // 보이는 카드 수에 따라 버튼 노출을 결정: 4개 미만이면 토너먼트 구성이
+    // 불가능하므로 숨긴다 (숨으면 flex라 랜덤 버튼이 자동으로 100% 차지)
+    function updateWorldcupButton(panel) {{
+      var wcBtn = panel.querySelector('.wc-btn');
+      if (!wcBtn) return;
+      var visibleCount = panel.querySelectorAll('.card-list .card:not(.cat-hidden)').length;
+      wcBtn.classList.toggle('hidden', visibleCount < 4);
+    }}
+
+    function startWorldcup(btn) {{
+      var panel = btn.closest('.tab-panel');
+      var visible = Array.prototype.slice.call(panel.querySelectorAll('.card-list .card:not(.cat-hidden)'));
+      if (visible.length < 4) return;
+      var size = visible.length >= 8 ? 8 : 4;  // 8개 이상=8강, 4~7개=4강
+      var entrants = visible.slice(0, size).map(function(card) {{
+        return {{
+          name: card.querySelector('.name').childNodes[0].textContent.trim(),
+          url: card.href
+        }};
+      }});
+      // 무작위 대진표 (Fisher-Yates 셔플)
+      for (var i = entrants.length - 1; i > 0; i--) {{
+        var j = Math.floor(Math.random() * (i + 1));
+        var tmp = entrants[i]; entrants[i] = entrants[j]; entrants[j] = tmp;
+      }}
+      wcState = {{ round: entrants, next: [], idx: 0, tab: panel.dataset.tabname || '' }};
+      document.getElementById('wc-winner').style.display = 'none';
+      document.getElementById('wc-match').style.display = '';
+      document.getElementById('wc-modal').classList.add('active');
+      renderWcMatch();
+    }}
+
+    function renderWcMatch() {{
+      if (wcState.idx >= wcState.round.length) {{
+        // 이번 라운드의 모든 매치 종료 -> 승자들로 다음 라운드 구성
+        if (wcState.next.length === 1) {{ showWcWinner(wcState.next[0]); return; }}
+        wcState.round = wcState.next;
+        wcState.next = [];
+        wcState.idx = 0;
+      }}
+      var roundName = wcState.round.length === 2 ? '결승' : wcState.round.length + '강';
+      var matchNo = (wcState.idx / 2) + 1;
+      var total = wcState.round.length / 2;
+      document.getElementById('wc-round-label').textContent =
+        '🏆 ' + roundName + ' ' + matchNo + '/' + total + ' - 어디로 갈까요?';
+      document.getElementById('wc-choice-a').textContent = wcState.round[wcState.idx].name;
+      document.getElementById('wc-choice-b').textContent = wcState.round[wcState.idx + 1].name;
+    }}
+
+    function wcPick(which) {{
+      if (!wcState) return;
+      wcState.next.push(wcState.round[wcState.idx + which]);
+      wcState.idx += 2;
+      renderWcMatch();
+    }}
+
+    function showWcWinner(winner) {{
+      wcState.winner = winner;
+      document.getElementById('wc-round-label').textContent = '🏆 이주의 핫플 월드컵 우승!';
+      document.getElementById('wc-match').style.display = 'none';
+      document.getElementById('wc-winner-name').textContent = winner.name;
+      document.getElementById('wc-winner-map').href = winner.url;
+      document.getElementById('wc-winner').style.display = '';
+    }}
+
+    function shareWcWinner(btn) {{
+      if (!wcState || !wcState.winner) return;
+      var text = '🏆 이주의 핫플 월드컵 1위!\\n'
+        + '내가 뽑은 ' + nowLabel() + ' ' + tabRegionPrefix(wcState.tab)
+        + '1위 핫플은 **[ ' + wcState.winner.name + ' ]** 입니다.\\n\\n'
+        + '📍 지도 보기: ' + wcState.winner.url + '\\n'
+        + '⚡ 다른 동네 굴려보기: ' + SITE_URL;
+      shareOrCopy(text, btn);
+    }}
+
+    function closeWorldcup() {{
+      document.getElementById('wc-modal').classList.remove('active');
+      wcState = null;
+    }}
+
+    // 페이지 로드 시 각 탭의 월드컵 버튼 노출 조건을 초기 계산
+    (function initWorldcupButtons() {{
+      document.querySelectorAll('.tab-panel').forEach(function(p) {{ updateWorldcupButton(p); }});
+    }})();
 
     // --- 다크모드: 헤더의 🌙/☀️ 버튼으로 전환, 선택은 localStorage에 저장되어
     // 다음 방문 때도 유지된다. 저장된 선택이 없으면(첫 방문) 기기의 시스템 설정
