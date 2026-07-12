@@ -684,7 +684,7 @@ def render_cards(items: list) -> str:
     # 지금 화면에 이미 그려진 카드들을 JS로 재배열하는 방식이라 추가 API 호출이 없다.
     sort_bar_html = (
         '<div class="sort-bar">'
-        '<button class="sort-btn active" data-sort="growth" onclick="sortByMetric(this)">🔥 급상승순</button>'
+        '<button class="sort-btn active" data-sort="rankmetric" onclick="sortByMetric(this)">🔥 급상승순</button>'
         '<button class="sort-btn" data-sort="thisweek" onclick="sortByMetric(this)">💬 언급많은순</button>'
         '<button class="sort-btn" data-sort="genuine" onclick="sortByMetric(this)">✅ 진짜후기순</button>'
         '</div>'
@@ -728,12 +728,18 @@ def render_cards(items: list) -> str:
         # 카드는 -1을 넣어 항상 맨 아래로 가도록 한다.
         genuine_for_sort = genuine_ratio if genuine_ratio is not None else -1
 
+        # "급상승순" 정렬 기준값. 서버가 실제로 정렬에 쓴 값과 반드시 일치시켜야
+        # (그래야 첫 화면 순서 == "급상승순" 버튼을 눌렀을 때 순서가 같아짐)
+        # TRUST_WEIGHTED_RANKING이 켜져 있으면 build_ranking()에서 score(신뢰도 보정
+        # 점수)로 정렬했으므로 여기서도 score를 써야 한다. 꺼져 있으면 growth 그대로.
+        # (배지에 보이는 "+N" 숫자는 항상 순수 growth를 그대로 보여준다 - 안 바뀜)
+        rank_metric_value = r["score"] if TRUST_WEIGHTED_RANKING else r["growth"]
+
         rows_html += f"""
-        <a class="card" data-category="{category}" data-growth="{r['growth']}"
+        <a class="card" data-category="{category}" data-rankmetric="{rank_metric_value}"
            data-thisweek="{r['this_week']}" data-genuine="{genuine_for_sort}"
            href="{map_url}" target="_blank" rel="noopener">
-          <button class="share-btn" data-name="{share_name}" data-region="{r['region']}"
-                  data-category="{category}" data-rank="{i}" data-map="{map_url}"
+          <button class="share-btn" data-name="{share_name}" data-map="{map_url}"
                   onclick="event.preventDefault(); event.stopPropagation(); shareCard(this);">🔗</button>
           <button class="fav-btn" data-key="{fav_key}"
                   onclick="event.preventDefault(); event.stopPropagation(); toggleFavorite(this);">♡</button>
@@ -832,7 +838,9 @@ def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html
         tab_buttons_html += f'<button class="tab-btn{active_btn}" data-tab="tab-{idx}">{name}</button>'
         # "지역랭킹" 탭만 다른 모양의 카드(render_region_cards)를 쓰고, 나머지는 식당 카드
         panel_content = render_region_cards(tabs[name]) if name == "지역랭킹" else render_cards(tabs[name])
-        tab_panels_html += f'<div class="tab-panel{active_panel}" id="tab-{idx}">{panel_content}</div>'
+        # data-tabname: 공유 버튼(shareCard)이 "지금 어느 탭인지"를 알아야
+        # "부산 급상승순 1위 - ..." 처럼 탭 이름을 공유 문구에 넣을 수 있다
+        tab_panels_html += f'<div class="tab-panel{active_panel}" id="tab-{idx}" data-tabname="{name}">{panel_content}</div>'
 
     # "즐겨찾기" 탭은 서버(파이썬)가 아니라 브라우저(localStorage)가 아는 정보라서
     # 여기서는 빈 틀만 만들어두고, 실제 내용은 페이지가 열릴 때 JS가 채워 넣는다
@@ -840,7 +848,7 @@ def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html
     # 즐겨찾기 표시된 것만 모아서 이 탭 안에 복사해 넣는 방식)
     tab_buttons_html += '<button class="tab-btn" data-tab="tab-favorites">♥ 즐겨찾기</button>'
     tab_panels_html += (
-        '<div class="tab-panel" id="tab-favorites">'
+        '<div class="tab-panel" id="tab-favorites" data-tabname="즐겨찾기">'
         '<p style="text-align:center;color:#999;padding:20px 0;">'
         '아직 즐겨찾기한 맛집이 없어요. 카드의 ♡를 눌러보세요.</p></div>'
     )
@@ -1420,11 +1428,29 @@ def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html
       }}
     }}
 
-    // --- 공유 버튼: 카테고리/순위/이름/지도 링크를 클립보드에 복사 ---
+    // --- 공유 버튼: "{{탭 이름}} {{정렬기준}}순 {{순위}}위 - {{이름}}\\n{{지도링크}}" 형태로 클립보드에 복사.
+    // 순위/정렬기준은 정적으로 미리 박아두지 않고, 클릭하는 시점에 화면에 보이는 상태
+    // (카테고리 필터로 숨겨졌는지, 어떤 정렬 버튼이 활성 상태인지)를 그대로 반영해서 계산한다.
+    var SORT_LABELS = {{ rankmetric: '급상승순', thisweek: '언급많은순', genuine: '진짜후기순' }};
+
     function shareCard(btn) {{
+      var card = btn.closest('.card');
+      var panel = btn.closest('.tab-panel');
+      var tabName = (panel && panel.dataset.tabname) || '';
+
+      // 지금 활성화된 정렬 기준 (탭에 정렬바가 없으면 - 예: 즐겨찾기 탭 - 기본값 사용)
+      var activeSortBtn = panel ? panel.querySelector('.sort-bar .sort-btn.active') : null;
+      var sortLabel = activeSortBtn ? (SORT_LABELS[activeSortBtn.dataset.sort] || '급상승순') : '급상승순';
+
+      // 지금 화면에 실제로 보이는(카테고리 필터로 숨겨지지 않은) 카드들 중 몇 번째인지 계산
+      var visibleCards = panel
+        ? Array.prototype.slice.call(panel.querySelectorAll('.card:not(.cat-hidden)'))
+        : [card];
+      var rank = visibleCards.indexOf(card) + 1;
+      if (rank <= 0) rank = 1;
+
       var name = decodeURIComponent(btn.dataset.name);
-      var text = btn.dataset.region + ' · ' + btn.dataset.category + ' ' + btn.dataset.rank
-        + '위 - ' + name + '\\n' + btn.dataset.map;
+      var text = tabName + ' ' + sortLabel + ' ' + rank + '위 - ' + name + '\\n' + btn.dataset.map;
 
       function showCopied() {{
         var original = btn.textContent;
