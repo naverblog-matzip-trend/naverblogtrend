@@ -767,6 +767,8 @@ def apply_search_trends(results: list, today: datetime.date) -> None:
     targets = []
     _seen_target_names = set()
     for r in results:
+        if r["growth"] <= 0:
+            continue  # build_tabs()의 "전체" 탭 선정 기준과 동일하게 상승 매장만
         if r["name"] in _seen_target_names:
             continue
         _seen_target_names.add(r["name"])
@@ -936,7 +938,13 @@ def build_ranking() -> tuple:
             smoothed_ratio = (genuine + GENUINE_SMOOTHING_K * GENUINE_PRIOR_RATIO) / (
                 total_sample + GENUINE_SMOOTHING_K
             )
-            score = growth * smoothed_ratio
+            # 주의: 스무딩 비율 곱은 growth가 양수일 때만 적용한다. 음수에 0~1 사이
+            # 비율을 곱하면 페널티가 오히려 "축소"되어, 하락 폭이 크고 신뢰도가
+            # 낮은 매장일수록 score가 0에 가까워지는 역전이 생긴다 (예: growth -10에
+            # 지수 5%면 -0.5가 되어, growth -2에 지수 50%인 매장의 -1.0을 이김).
+            # 음수/0은 growth 그대로 써서 하락 폭 순서가 정직하게 유지되게 한다.
+            # (지역랭킹 합산과 티커의 침체 판정은 score가 아니라 growth를 쓰므로 영향 없음)
+            score = growth * smoothed_ratio if growth > 0 else growth
 
             results.append({
                 "name": name,
@@ -1010,6 +1018,14 @@ def build_tabs(all_results: list, region_ranking: list) -> dict:
     seen_global = set()
     overall = []
     for r in all_results:
+        if r["growth"] <= 0:
+            # "전체" 탭은 사이트의 간판인 "급상승 TOP N"이므로, 상위권 풀이 말라붙은
+            # 극단 상황에서도 하락/보합 매장이 끼어들지 않게 표시 단계에서만 거른다.
+            # 수집 데이터(all_results)에서 빼는 게 아니라 여기서만 거르는 이유:
+            # 지역랭킹 합산("이번 주 N건"과 침체 상권 판정)과 지역별 탭은 하락
+            # 매장의 데이터도 필요로 하기 때문 (수집 단계에서 자르면 지역 통계가
+            # 상승분만 남아 상향 왜곡되고, 티커의 "침체" 문구는 영원히 못 뜬다).
+            continue
         if r["name"] in seen_global:
             continue
         seen_global.add(r["name"])
@@ -2469,7 +2485,12 @@ def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html
       if (rank <= 0) rank = 1;
 
       var name = decodeURIComponent(btn.dataset.name);
-      var text = tabName + ' ' + sortLabel + ' ' + rank + '위 - ' + name + '\\n' + btn.dataset.map;
+      // 즐겨찾기 탭은 정렬바도 서버 순위 개념도 없는 "개인 목록"이라, 기본 조합을
+      // 그대로 쓰면 "즐겨찾기 급상승순 1위 - ..."라는 어색한 문구가 나간다.
+      // (이때의 순위 숫자는 단순 담은 순서일 뿐 의미가 없음) -> 전용 포맷으로 분기.
+      var text = (tabName === '즐겨찾기')
+        ? '💝 즐겨찾기 맛집 - ' + name + '\\n' + btn.dataset.map
+        : tabName + ' ' + sortLabel + ' ' + rank + '위 - ' + name + '\\n' + btn.dataset.map;
 
       function showCopied() {{
         var original = btn.textContent;
@@ -2509,7 +2530,13 @@ def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html
       }} else {{
         favs[key] = true;
       }}
-      localStorage.setItem('naver_trend_favorites', JSON.stringify(favs));
+      try {{
+        localStorage.setItem('naver_trend_favorites', JSON.stringify(favs));
+      }} catch (e) {{
+        /* 사생활 보호 모드/일부 인앱 브라우저에서는 저장이 막혀 여기서 예외가 난다.
+           저장은 못 해도(새로고침 시 초기화) 지금 세션의 하트 토글과 즐겨찾기 탭은
+           그대로 동작하도록 삼킨다 - 다크모드 토글(toggleTheme)과 같은 방어 원칙 */
+      }}
 
       // 같은 식당 카드가 "전체"/지역별 탭 등 여러 곳에 동시에 있을 수 있으므로,
       // 지금 누른 버튼 하나만이 아니라 같은 key를 가진 버튼을 전부 같이 갱신한다
@@ -2925,8 +2952,8 @@ def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html
       if (!payState) return;
       var text = '💵 오늘 밥값 낼 사람은 누구?\\n'
         + nowLabel() + ' 급상승 맛집 모임에서 진행한 밥값 쏘기 내기 결과!\\n\\n'
-        + '🎯 당첨자: **[ ' + payState.winners.join(', ') + ' ]** (축하합니다 👏)\\n'
-        + '(참여자: ' + payState.all.join(', ') + ')\\n\\n'
+        + '🎯 당첨자: **[ ' + payState.winners.join(', ') + ' ]** (축하합니다 👏)\\n\\n'
+        + '👥 참여 멤버: ' + payState.all.join(', ') + '\\n\\n'
         + '⚡ 오늘 방문한 핫플 정보 보기: ' + SITE_URL;
       shareOrCopy(text, btn);
     }}
