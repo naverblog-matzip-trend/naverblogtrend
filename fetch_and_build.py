@@ -675,8 +675,11 @@ def apply_streaks(results: list, today: datetime.date) -> None:
     cutoff = (today - datetime.timedelta(days=14)).isoformat()
     history = {key: v for key, v in history.items() if v.get("last_date", "") >= cutoff}
 
-    with open(STREAK_HISTORY_FILE, "w", encoding="utf-8") as f:
-        json.dump(history, f, ensure_ascii=False, indent=2)
+    try:
+        with open(STREAK_HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(history, f, ensure_ascii=False, indent=2)
+    except OSError:
+        pass  # 기록 저장 실패는 치명적이지 않음 (다른 기록 파일 저장과 동일한 정책)
 
 
 def apply_trend_history(results: list, today: datetime.date) -> None:
@@ -769,13 +772,20 @@ def apply_search_trends(results: list, today: datetime.date) -> None:
     for r in results:
         if r["growth"] <= 0:
             continue  # build_tabs()의 "전체" 탭 선정 기준과 동일하게 상승 매장만
+        if r.get("low_genuine"):
+            continue  # 전체 탭에 표시되지 않는 매장은 데이터랩 호출 낭비 (기준 동일 유지)
         if r["name"] in _seen_target_names:
             continue
         _seen_target_names.add(r["name"])
         targets.append(r)
         if len(targets) == DATALAB_MAX_ITEMS:
             break
-    this_week_start = today - datetime.timedelta(days=7)
+    # 주의(과거 버그): 예전에는 -7일로 잡아서, 조회 구간 14일(-13일~오늘)을
+    # "이번 주 8일 vs 지난 주 6일"로 나누는 비대칭이 있었다 -> 모든 식당의
+    # 검색 관심도가 구조적으로 "상승"으로 판정되기 쉬운 상향 편향 버그.
+    # (블로그 집계의 -7일/-14일 비대칭 버그와 같은 클래스의 문제)
+    # 오늘 포함 정확히 7일 vs 7일이 되도록 -6일로 수정.
+    this_week_start = today - datetime.timedelta(days=6)   # 이번 주: today-6 ~ today (7일)
     today_str = today.isoformat()
 
     # --- 하루 단위 캐시: 데이터랩 지표는 일 단위로 갱신되는 성격이라, 같은 날
@@ -909,16 +919,24 @@ def build_ranking() -> tuple:
                 continue
 
             # 내돈내산 지수 필터: 표본이 충분한데(genuine_ratio가 None이 아님)
-            # 그 값이 기준(MIN_GENUINE_RATIO_TO_SHOW)보다 낮으면, 배지만 숨기는 게
-            # 아니라 순위 후보 자체에서 뺀다. 표본이 부족해서 지수를 못 낸 경우는
+            # 그 값이 기준(MIN_GENUINE_RATIO_TO_SHOW)보다 낮으면 순위/티커 표시
+            # 대상에서 제외한다. 표본이 부족해서 지수를 못 낸 경우는
             # (genuine_ratio가 None) 판단 근거가 없으므로 그냥 통과시킨다.
-            if (
+            #
+            # 주의(과거 버그): 예전에는 여기서 continue로 수집 결과(all_results)에서
+            # 통째로 뺐는데, 그러면 이 식당들의 언급량이 지역랭킹 합산("이번 주 N건",
+            # 침체 판정)에서도 빠져서 협찬성 매장이 많은 지역일수록 화제성이
+            # 저평가되는 왜곡이 생겼다 (growth<=0을 표시 단계에서만 거르는 것과
+            # 같은 원칙 위반). 그래서 데이터는 남기고 low_genuine 플래그만 달아,
+            # 전체 탭/지역별 탭/티커 등 "표시 단계"에서만 거른다.
+            low_genuine = (
                 MIN_GENUINE_RATIO_TO_SHOW is not None
                 and genuine_ratio is not None
                 and genuine_ratio < MIN_GENUINE_RATIO_TO_SHOW
-            ):
-                print(f"    ({name}: 내돈내산 지수 {genuine_ratio}%로 낮아 순위에서 제외)")
-                continue
+            )
+            if low_genuine:
+                print(f"    ({name}: 내돈내산 지수 {genuine_ratio}%로 낮아 표시에서 제외 "
+                      f"- 지역 통계에는 포함)")
 
             # 신뢰도 가중 점수: growth(증가폭)에 내돈내산 비율을 곱해서 보정한 값.
             #
@@ -955,6 +973,7 @@ def build_ranking() -> tuple:
                 "growth": growth,
                 "filtered": filtered,
                 "genuine_ratio": genuine_ratio,  # None이면 표본 부족 -> 화면에 배지 안 뜸
+                "low_genuine": low_genuine,  # True면 표시 단계(탭/티커)에서만 제외
                 "score": score,
             })
             ratio_note = f", 내돈내산 {genuine_ratio}%" if genuine_ratio is not None else ""
@@ -1026,6 +1045,8 @@ def build_tabs(all_results: list, region_ranking: list) -> dict:
             # 매장의 데이터도 필요로 하기 때문 (수집 단계에서 자르면 지역 통계가
             # 상승분만 남아 상향 왜곡되고, 티커의 "침체" 문구는 영원히 못 뜬다).
             continue
+        if r.get("low_genuine"):
+            continue  # 내돈내산 지수 미달 - growth<=0과 같은 원칙으로 표시 단계에서만 제외
         if r["name"] in seen_global:
             continue
         seen_global.add(r["name"])
@@ -1036,7 +1057,12 @@ def build_tabs(all_results: list, region_ranking: list) -> dict:
     if region_ranking:
         tabs["지역랭킹"] = region_ranking  # 두 번째 탭 = 지역별 랭킹 (데이터 있을 때만)
     for region in REGIONS:
-        region_results = [r for r in all_results if r["region"] == region]
+        # low_genuine(내돈내산 지수 미달) 매장은 지역별 탭 화면에서도 제외한다.
+        # (지역랭킹 탭의 합산 통계에는 이미 build_region_ranking()에서 포함됨)
+        region_results = [
+            r for r in all_results
+            if r["region"] == region and not r.get("low_genuine")
+        ]
         if region_results:  # 데이터가 있는 지역만 탭으로 생성 (빈 탭 방지)
             tabs[region] = region_results[:TOP_N_PER_REGION]
     return tabs
@@ -1294,8 +1320,12 @@ def build_ticker_slides(tabs: dict, all_results=None) -> list:
     """
     slides = []
     region_ranking = tabs.get("지역랭킹") or []
-    # 슬라이드 2~4의 후보 풀: 전체 식당 목록이 있으면 그걸, 없으면(하위 호환) 전체 탭
+    # 슬라이드 2~4의 후보 풀: 전체 식당 목록이 있으면 그걸, 없으면(하위 호환) 전체 탭.
+    # low_genuine(내돈내산 지수 미달) 매장은 탭 화면과 마찬가지로 티커에서도
+    # 표시 대상이 아니므로 풀에서 제외한다 (탭에는 없는 매장이 티커에만 뜨면
+    # 이상하니까). 지역랭킹 기반의 슬라이드 1은 합산 통계라 영향 없음.
     pool = all_results if all_results else (tabs.get("전체") or [])
+    pool = [r for r in pool if not r.get("low_genuine")]
 
     if region_ranking:
         top = region_ranking[0]
