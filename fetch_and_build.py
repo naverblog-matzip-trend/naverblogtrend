@@ -1805,12 +1805,18 @@ def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html
     # 하단 안내 문구: 협찬 제외 건수는 항상 표시하고, 내돈내산 지수 기준으로
     # 필터링하는 기능(MIN_GENUINE_RATIO_TO_SHOW)이 켜져 있으면 그 기준도 같이 안내한다
     # 집계 범위 표기: 배너 배지에 넣었더니 미관을 해쳐서 안내 문구 앞으로 이동.
-    # "서울 상위 S" = 서울 쿼터로 선정된 권역 수, "전체 상위 T" = 이번 실행의
-    # 전체 집계 지역 수(서울 포함). 둘 다 실제 탭이 생긴 지역만 센다.
+    # "전체 상위 T개 지역" = 이번 실행의 전체 집계 지역 수(서울 포함),
+    # 괄호 안의 "서울 상위 S" = 그중 서울 쿼터로 선정된 권역 수. 둘 다 실제
+    # 탭이 생긴 지역만 센다.
+    #
+    # 주의(과거 표기 버그): 예전엔 "서울 상위 10 · 전체 상위 24개 지역"처럼
+    # 나열했는데, T가 이미 S를 포함하는 값인데도 두 수가 병렬로 보여서
+    # "10 + 24 = 34개 지역"으로 읽히는 중의성이 있었다. 포함 관계가 표기에서
+    # 바로 드러나도록 괄호 종속 형태로 바꿨다.
     _seoul_cnt = len([k for k in tabs if k in set(SEOUL_REGIONS)])
     _total_cnt = len([k for k in tabs if k not in ("전체", "지역랭킹", "서울 전체")])
     _scope_note = (
-        f"서울 상위 {_seoul_cnt} · 전체 상위 {_total_cnt}개 지역 " if _seoul_cnt
+        f"전체 상위 {_total_cnt}개 지역(서울 상위 {_seoul_cnt} 포함) " if _seoul_cnt
         else (f"상위 {_total_cnt}개 지역 " if _total_cnt else "")
     )
     filter_note = f"{_scope_note}집계 합산 기준 협찬·광고·체험단 추정 게시물 {total_filtered}건 제외"
