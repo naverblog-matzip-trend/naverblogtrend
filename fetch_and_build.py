@@ -3032,7 +3032,30 @@ def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html
     width: 100%;
     text-align: center;
     box-shadow: 0 20px 50px rgba(0,0,0,0.3);
+    position: relative;  /* 우상단 즐겨찾기 하트(absolute)의 기준점 */
   }}
+  /* 모달 우상단 즐겨찾기 하트 (랜덤 추천 결과 / 월드컵 우승 공용).
+     카드의 .fav-btn과 저장소·키를 공유하지만, 스타일은 모달에 맞게 크게 별도 정의 */
+  .modal-fav-btn {{
+    position: absolute;
+    top: 10px;
+    right: 12px;
+    width: 40px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    background: transparent;
+    font-size: 28px;
+    line-height: 1;
+    color: #ccc;
+    cursor: pointer;
+    padding: 0;
+  }}
+  .modal-fav-btn.active {{ color: #ff5a36; }}
+  body.dark .modal-fav-btn {{ color: #555; }}
+  body.dark .modal-fav-btn.active {{ color: #ff5a36; }}
   .pick-modal-label {{
     font-size: 13px;
     color: #999;
@@ -3160,6 +3183,8 @@ def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html
        뽑기가 끝나면 JS가 display:flex로 바꿔서 화면 중앙에 띄운다 -->
   <div id="pick-modal" class="pick-modal-overlay" onclick="if(event.target===this) closePickModal()">
     <div class="pick-modal-box">
+      <!-- 우상단 즐겨찾기 하트: 뽑힌 식당을 카드 하트와 같은 저장소에 추가/해제 -->
+      <button class="modal-fav-btn" id="pick-modal-fav" onclick="toggleModalFav(this)" aria-label="즐겨찾기 추가/해제">♡</button>
       <div class="pick-modal-label">오늘 당신의 픽은</div>
       <div class="pick-modal-name" id="pick-modal-name">-</div>
       <div class="pick-modal-sub" id="pick-modal-sub"></div>
@@ -3181,6 +3206,9 @@ def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html
         <button class="wc-choice" id="wc-choice-b" onclick="wcPick(1)">-</button>
       </div>
       <div id="wc-winner" style="display:none;">
+        <!-- 우상단 즐겨찾기 하트: 우승 화면에서만 보이도록 이 컨테이너 안에 둔다
+             (absolute 기준점은 바깥 .pick-modal-box) -->
+        <button class="modal-fav-btn" id="wc-winner-fav" onclick="toggleModalFav(this)" aria-label="즐겨찾기 추가/해제">♡</button>
         <div class="pick-modal-name" id="wc-winner-name">-</div>
         <div class="pick-modal-sub" id="wc-winner-sub"></div>
         <div class="pick-modal-buttons">
@@ -3368,6 +3396,11 @@ def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html
       pickSub.textContent = pickMeta;
       pickSub.style.display = pickMeta ? '' : 'none';
       document.getElementById('pick-modal-map').href = card.href;
+      // 우상단 하트: 뽑힌 카드의 즐겨찾기 키를 물려받아 현재 상태(♥/♡)를 반영
+      var pickFav = document.getElementById('pick-modal-fav');
+      var pickSrcBtn = card.querySelector('.fav-btn');
+      pickFav.dataset.key = pickSrcBtn ? pickSrcBtn.dataset.key : '';
+      syncModalFavHeart(pickFav);
       modal.classList.add('active');
     }}
 
@@ -3529,6 +3562,26 @@ def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html
       }});
 
       renderFavoritesTab();
+    }}
+
+    // --- 모달 우상단 즐겨찾기 하트 (랜덤 추천 결과 / 월드컵 우승 공용) ---
+    // 저장·카드 하트 동기화·즐겨찾기 탭 갱신은 기존 toggleFavorite를 그대로
+    // 재사용한다 (이 버튼도 data-key를 갖고 있어 같은 함수가 동작함).
+    // 모달 하트 자신은 .fav-btn 클래스가 아니어서 toggleFavorite의 일괄 갱신
+    // 대상에 안 잡히므로, 여기서 직접 다시 그려준다.
+    function syncModalFavHeart(el) {{
+      if (!el) return;
+      var key = el.dataset.key || '';
+      var on = key && !!loadFavorites()[key];
+      el.textContent = on ? '♥' : '♡';
+      el.classList.toggle('active', !!on);
+      el.style.display = key ? '' : 'none';  // 키를 못 찾은 예외 상황이면 숨김
+    }}
+
+    function toggleModalFav(el) {{
+      if (!el.dataset.key) return;
+      toggleFavorite(el);
+      syncModalFavHeart(el);
     }}
 
     // "즐겨찾기" 탭 안에 실제 카드를 채워 넣는 함수. 다른 탭에 이미 그려져 있는
@@ -3839,7 +3892,12 @@ def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html
           // 수직 스택형 선택 버튼의 상단 메타 정보(지역 · 카테고리)용.
           // 카드에 심어둔 data 속성에서 읽으므로 추가 연산/통신이 없다.
           region: card.dataset.region || '',
-          category: card.dataset.category || ''
+          category: card.dataset.category || '',
+          // 우승 화면의 즐겨찾기 하트가 쓸 키 (카드 하트와 같은 저장소 공유)
+          favkey: (function() {{
+            var fb = card.querySelector('.fav-btn');
+            return fb ? fb.dataset.key : '';
+          }})()
         }};
       }});
       // 무작위 대진표 (Fisher-Yates 셔플)
@@ -3903,6 +3961,10 @@ def render_html(tabs: dict, total_filtered: int = 0, out_path: str = "index.html
       wcSub.textContent = wcMeta;
       wcSub.style.display = wcMeta ? '' : 'none';
       document.getElementById('wc-winner-map').href = winner.url;
+      // 우상단 하트: 우승 식당의 즐겨찾기 키를 물려받아 현재 상태(♥/♡)를 반영
+      var wcFav = document.getElementById('wc-winner-fav');
+      wcFav.dataset.key = winner.favkey || '';
+      syncModalFavHeart(wcFav);
       document.getElementById('wc-winner').style.display = '';
     }}
 
